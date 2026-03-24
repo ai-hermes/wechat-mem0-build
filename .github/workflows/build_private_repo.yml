@@ -62,8 +62,11 @@ jobs:
           npm version $VERSION --no-git-tag-version --allow-same-version
 
       - name: Install Dependencies
-        run: |
-          npm install --registry=https://registry.npmjs.org
+        run: npm ci --registry=https://registry.npmjs.org
+
+      - name: Install Rollup native dependencies (Windows)
+        if: matrix.os == 'windows-latest'
+        run: npm install --no-save @rollup/rollup-win32-x64-msvc
 
       - name: Build/release Electron app (Linux)
         if: matrix.os == 'ubuntu-latest'
