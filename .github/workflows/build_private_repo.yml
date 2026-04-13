@@ -38,9 +38,24 @@ jobs:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       
     strategy:
+      fail-fast: false
       matrix:
-        # os: [ubuntu-latest, macos-latest, windows-latest]
-        os: [macos-latest, windows-latest]
+        include:
+          - os: macos-latest
+            platform: mac
+            arch: x64
+            build_script: build:mac:x64
+            core_path: resources/bin/darwin-x64/wechat-decrypt-core
+          - os: macos-latest
+            platform: mac
+            arch: arm64
+            build_script: build:mac:arm64
+            core_path: resources/bin/darwin-arm64/wechat-decrypt-core
+          - os: windows-latest
+            platform: win
+            arch: x64
+            build_script: build:win:x64
+            core_path: resources/bin/win32-x64/wechat-decrypt-core.exe
     steps:
       - name: Checkout Private Repository
         uses: actions/checkout@v4
@@ -76,15 +91,71 @@ jobs:
             lightningcss-win32-x64-msvc \
             @tailwindcss/oxide-win32-x64-msvc
 
-      - name: Build/release Electron app (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        run: npm run build:linux
+      - name: Build local decrypt core (macOS)
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: npm run build:local-decrypt-core
+
+      - name: Setup MSVC toolchain (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build local decrypt core (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $outDir = "resources/bin/win32-${{ matrix.arch }}"
+          New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+          $target = Join-Path $outDir "wechat-decrypt-core.exe"
+          $src = Join-Path $env:RUNNER_TEMP "wechat-decrypt-core-windows.c"
+
+          @'
+          #include <stdio.h>
+          #include <string.h>
+
+          static void print_usage(void) {
+            printf("wechat-decrypt-core commands:\\n");
+            printf("  status\\n");
+            printf("  extract-keys\\n");
+            printf("  decrypt-all\\n");
+            printf("  decrypt-db-files\\n");
+          }
+
+          int main(int argc, char** argv) {
+            if (argc < 2) {
+              print_usage();
+              return 1;
+            }
+
+            if (strcmp(argv[1], "status") == 0) {
+              printf("{\\"ok\\":true,\\"platform\\":\\"windows\\",\\"mode\\":\\"local-build\\"}\\n");
+              return 0;
+            }
+
+            fprintf(stderr, "[WARN] command '%s' is not implemented in this Windows local-build core yet.\\n", argv[1]);
+            return 2;
+          }
+          '@ | Set-Content -Path $src -Encoding ascii
+
+          Write-Host "Compiling Windows ${{ matrix.arch }} core to $target"
+          cl /nologo /O2 /W3 /D_CRT_SECURE_NO_WARNINGS /Fe:$target $src
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to build Windows ${{ matrix.arch }} local decrypt core"
+          }
+
+          Get-Item $target | Select-Object FullName,Length | Format-List
+
+      - name: Verify local decrypt core exists for matrix target
         env:
-          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          CORE_PATH: ${{ matrix.core_path }}
+        run: |
+          node -e "const fs=require('fs');const p=process.env.CORE_PATH;if(!fs.existsSync(p)){console.error('Missing local decrypt core:',p);process.exit(1)};console.log('Found local decrypt core:',p)"
 
       - name: Build/release Electron app (macOS)
-        if: matrix.os == 'macos-latest'
-        run: npm run build:mac
+        if: matrix.platform == 'mac'
+        run: npm run ${{ matrix.build_script }}
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
           # For macOS code signing (optional)
@@ -96,8 +167,8 @@ jobs:
           # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - name: Build/release Electron app (Windows)
-        if: matrix.os == 'windows-latest'
-        run: npm run build:win
+        if: matrix.platform == 'win'
+        run: npm run ${{ matrix.build_script }}
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
 
