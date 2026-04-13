@@ -16,6 +16,7 @@ workflow.
 
 - [Overview](#overview)
 - [Releases](#releases)
+- [Single-Repo Stable Release Flow](#single-repo-stable-release-flow)
 - [Build Matrix](#build-matrix)
 - [CI/CD Workflow](#cicd-workflow)
 - [Required Secrets](#required-secrets)
@@ -32,12 +33,13 @@ RethinkAI is an AI-powered desktop assistant that integrates long-term memory
 ([Tavily](https://tavily.com)), and analytics
 ([PostHog](https://posthog.com)).  The build pipeline in this repository:
 
-1. Checks out the private source repository.
-2. Bumps the version to match the release tag (when triggered by a tag push).
-3. Installs dependencies and resolves platform-native packages.
-4. Builds platform-specific Electron installers.
-5. Signs and notarizes macOS binaries using Apple Developer credentials.
-6. Uploads all artifacts to a GitHub Release.
+1. Creates a source tag and source release in `ai-hermes/wechat-mem0` (manual stable release flow).
+2. Checks out the private source repository by tag.
+3. Bumps the version to match the release tag.
+4. Installs dependencies and resolves platform-native packages.
+5. Builds platform-specific Electron installers.
+6. Signs and notarizes macOS binaries using Apple Developer credentials.
+7. Uploads all artifacts to a GitHub Release in this build repository.
 
 ---
 
@@ -45,12 +47,32 @@ RethinkAI is an AI-powered desktop assistant that integrates long-term memory
 
 | Channel | Trigger | Tag |
 |---------|---------|-----|
-| **Stable** | Push of a `v*.*.*` tag | `v1.2.3` |
+| **Stable (recommended)** | `workflow_dispatch` with `version` + `source_branch` | `v1.2.3` |
+| **Stable (legacy)** | Push of a `v*.*.*` tag | `v1.2.3` |
 | **Nightly** | Scheduled daily at 04:00 CST (UTC 20:00) | `nightly` |
-| **Manual** | `workflow_dispatch` with a branch name | — |
 
 Download the latest installer from the
 [Releases](../../releases/latest) page.
+
+---
+
+## Single-Repo Stable Release Flow
+
+Use only this repository (`ai-hermes/wechat-mem0-build`) to publish a stable release:
+
+1. Open **Actions → Build Private Repository → Run workflow**.
+2. Set:
+   - `version`: target tag like `v1.2.3`
+   - `source_branch`: source branch in `ai-hermes/wechat-mem0` (default `main`)
+3. Run workflow.
+
+What the workflow does:
+
+1. Resolves the latest commit on `source_branch` in `ai-hermes/wechat-mem0`.
+2. Fails fast if `version` already exists in `ai-hermes/wechat-mem0`.
+3. Creates the same tag and auto-generated release in `ai-hermes/wechat-mem0`.
+4. Builds installers from that exact source tag.
+5. Publishes release `version` in `ai-hermes/wechat-mem0-build` with auto-generated notes and artifacts.
 
 ---
 
@@ -72,10 +94,14 @@ The single workflow file
 drives everything.
 
 ```
-tag push / schedule / manual dispatch
+manual stable dispatch / tag push / schedule
+        │
+        ├── manual stable dispatch:
+        │     create tag + release in ai-hermes/wechat-mem0
+        │
         │
         ▼
-Checkout ai-hermes/wechat-mem0  (via PRIVATE_REPO_PAT)
+Checkout ai-hermes/wechat-mem0 by resolved ref/tag (via PRIVATE_REPO_PAT)
         │
         ▼
 Setup Node 22 + npm ci

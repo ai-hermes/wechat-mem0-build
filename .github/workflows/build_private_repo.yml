@@ -6,8 +6,11 @@ on:
       - v*.*.*
   workflow_dispatch:
     inputs:
-      branch:
-        description: 'Branch to build (ignored if tag is provided)'
+      version:
+        description: 'Release tag in semver format, e.g. v1.2.3'
+        required: true
+      source_branch:
+        description: 'Source branch in ai-hermes/wechat-mem0 to tag and release'
         required: true
         default: 'main'
 
@@ -18,7 +21,117 @@ permissions:
   contents: write
 
 jobs:
+  prepare_release:
+    runs-on: ubuntu-latest
+    outputs:
+      source_ref: ${{ steps.compute.outputs.source_ref }}
+      release_tag: ${{ steps.compute.outputs.release_tag }}
+      should_release: ${{ steps.compute.outputs.should_release }}
+      release_target_commitish: ${{ steps.compute.outputs.release_target_commitish }}
+      is_nightly: ${{ steps.compute.outputs.is_nightly }}
+    steps:
+      - name: Compute release context
+        id: compute
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+            if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Invalid version '$VERSION'. Expected format: vX.Y.Z"
+              exit 1
+            fi
+            echo "source_ref=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "release_tag=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "release_target_commitish=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+            echo "is_nightly=false" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "source_ref=main" >> "$GITHUB_OUTPUT"
+            echo "release_tag=nightly" >> "$GITHUB_OUTPUT"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "release_target_commitish=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+            echo "is_nightly=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "source_ref=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "release_tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "release_target_commitish=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+            echo "is_nightly=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create source tag and release
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          GH_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+          SOURCE_BRANCH: ${{ github.event.inputs.source_branch }}
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+
+          API_ROOT="https://api.github.com/repos/ai-hermes/wechat-mem0"
+          AUTH_HEADER="Authorization: token ${GH_PAT}"
+          ACCEPT_HEADER="Accept: application/vnd.github+json"
+          CONTENT_HEADER="Content-Type: application/json"
+          BRANCH_ENCODED=$(printf '%s' "$SOURCE_BRANCH" | jq -sRr @uri)
+
+          echo "Resolving source branch HEAD: $SOURCE_BRANCH"
+          BRANCH_CODE=$(curl -sS -o /tmp/source_branch.json -w "%{http_code}" \
+            -H "$AUTH_HEADER" -H "$ACCEPT_HEADER" \
+            "${API_ROOT}/git/ref/heads/${BRANCH_ENCODED}")
+          if [ "$BRANCH_CODE" != "200" ]; then
+            echo "Failed to resolve source branch '$SOURCE_BRANCH' (HTTP $BRANCH_CODE)."
+            cat /tmp/source_branch.json
+            exit 1
+          fi
+          SOURCE_SHA=$(jq -r '.object.sha' /tmp/source_branch.json)
+          if [ -z "$SOURCE_SHA" ] || [ "$SOURCE_SHA" = "null" ]; then
+            echo "Could not resolve commit SHA for branch '$SOURCE_BRANCH'."
+            cat /tmp/source_branch.json
+            exit 1
+          fi
+          echo "Resolved source SHA: $SOURCE_SHA"
+
+          echo "Checking whether tag already exists: $VERSION"
+          TAG_CODE=$(curl -sS -o /tmp/source_tag_check.json -w "%{http_code}" \
+            -H "$AUTH_HEADER" -H "$ACCEPT_HEADER" \
+            "${API_ROOT}/git/ref/tags/${VERSION}")
+          if [ "$TAG_CODE" = "200" ]; then
+            echo "Tag '$VERSION' already exists in ai-hermes/wechat-mem0. Failing fast."
+            exit 1
+          fi
+          if [ "$TAG_CODE" != "404" ]; then
+            echo "Unexpected response while checking existing tag (HTTP $TAG_CODE)."
+            cat /tmp/source_tag_check.json
+            exit 1
+          fi
+
+          echo "Creating tag '$VERSION' in ai-hermes/wechat-mem0"
+          TAG_CREATE_CODE=$(curl -sS -o /tmp/source_tag_create.json -w "%{http_code}" \
+            -X POST -H "$AUTH_HEADER" -H "$ACCEPT_HEADER" -H "$CONTENT_HEADER" \
+            "${API_ROOT}/git/refs" \
+            -d "{\"ref\":\"refs/tags/${VERSION}\",\"sha\":\"${SOURCE_SHA}\"}")
+          if [ "$TAG_CREATE_CODE" != "201" ]; then
+            echo "Failed to create tag '$VERSION' (HTTP $TAG_CREATE_CODE)."
+            cat /tmp/source_tag_create.json
+            exit 1
+          fi
+
+          echo "Creating release '$VERSION' in ai-hermes/wechat-mem0"
+          RELEASE_CREATE_CODE=$(curl -sS -o /tmp/source_release_create.json -w "%{http_code}" \
+            -X POST -H "$AUTH_HEADER" -H "$ACCEPT_HEADER" -H "$CONTENT_HEADER" \
+            "${API_ROOT}/releases" \
+            -d "{\"tag_name\":\"${VERSION}\",\"target_commitish\":\"${SOURCE_SHA}\",\"generate_release_notes\":true,\"draft\":false,\"prerelease\":false}")
+          if [ "$RELEASE_CREATE_CODE" != "201" ]; then
+            echo "Failed to create release '$VERSION' (HTTP $RELEASE_CREATE_CODE)."
+            cat /tmp/source_release_create.json
+            exit 1
+          fi
+
   build:
+    needs: prepare_release
     runs-on: ${{ matrix.os }}
 
     env:
@@ -62,7 +175,7 @@ jobs:
         with:
           repository: ai-hermes/wechat-mem0
           token: ${{ secrets.PRIVATE_REPO_PAT }}
-          ref: ${{ github.event.inputs.branch || (github.ref_type == 'tag' && github.ref_name) || 'main' }}
+          ref: ${{ needs.prepare_release.outputs.source_ref }}
 
       - name: Install Node.js
         uses: actions/setup-node@v4
@@ -71,10 +184,11 @@ jobs:
           cache: 'npm'
       
       - name: Update version from tag
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(needs.prepare_release.outputs.release_tag, 'v')
         shell: bash
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
+          VERSION=${{ needs.prepare_release.outputs.release_tag }}
+          VERSION=${VERSION#v}
           echo "Updating package.json version to $VERSION"
           npm version $VERSION --no-git-tag-version --allow-same-version
 
@@ -269,12 +383,13 @@ jobs:
 
       - name: Release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'schedule'
+        if: needs.prepare_release.outputs.should_release == 'true'
         with:
           token: ${{ secrets.PRIVATE_REPO_PAT }}
-          tag_name: ${{ github.event_name == 'schedule' && 'nightly' || '' }}
-          prerelease: ${{ github.event_name == 'schedule' }}
-          target_commitish: ${{ github.sha }}
+          tag_name: ${{ needs.prepare_release.outputs.release_tag }}
+          prerelease: ${{ needs.prepare_release.outputs.is_nightly == 'true' }}
+          target_commitish: ${{ needs.prepare_release.outputs.release_target_commitish }}
+          generate_release_notes: ${{ needs.prepare_release.outputs.is_nightly != 'true' }}
           draft: false
           files: |
             release/*.exe
