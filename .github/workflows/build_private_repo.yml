@@ -150,7 +150,7 @@ jobs:
             }
 
             if (strcmp(argv[1], "status") == 0) {
-              printf("{\\"ok\\":true,\\"platform\\":\\"windows\\",\\"mode\\":\\"local-build\\"}\\n");
+              printf("{\"ok\":true,\"platform\":\"windows\",\"mode\":\"local-build\"}\n");
               return 0;
             }
 
@@ -163,7 +163,7 @@ jobs:
           #include <stdio.h>
           int main(int argc, char** argv) {
             (void)argc; (void)argv;
-            printf("{\"ok\":true,\"tool\":\"find_all_keys_windows\",\"mode\":\"local-build\"}\\n");
+            printf("{\"ok\":true,\"tool\":\"find_all_keys_windows\",\"mode\":\"local-build\"}\n");
             return 0;
           }
           '@ | Set-Content -Path $scannerSrc -Encoding ascii
