@@ -62,7 +62,7 @@ Use only this repository (`ai-hermes/wechat-mem0-build`) to publish a stable rel
 
 1. Open **Actions → Build Private Repository → Run workflow**.
 2. Set:
-   - `version`: target tag like `v1.2.3`
+   - `version`: SemVer tag like `v1.2.3` or `v1.2.3-alpha.25`
    - `source_branch`: source branch in `ai-hermes/wechat-mem0` (default `main`)
 3. Run workflow.
 
