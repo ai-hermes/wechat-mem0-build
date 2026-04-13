@@ -87,41 +87,25 @@ jobs:
         run: npm ci --registry=https://registry.npmjs.org
 
       - name: Install native dependencies (Windows)
-        if: matrix.os == 'windows-latest' && matrix.arch == 'x64'
+        if: matrix.os == 'windows-latest'
         shell: bash
         run: |
           npm install --no-save \
-            @rollup/rollup-win32-x64-msvc \
-            @esbuild/win32-x64 \
-            lightningcss-win32-x64-msvc \
-            @tailwindcss/oxide-win32-x64-msvc
-
-      - name: Install native dependencies (Windows arm64)
-        if: matrix.os == 'windows-latest' && matrix.arch == 'arm64'
-        shell: bash
-        run: |
-          npm install --no-save \
-            @rollup/rollup-win32-arm64-msvc \
-            @esbuild/win32-arm64 \
-            lightningcss-win32-arm64-msvc \
-            @tailwindcss/oxide-win32-arm64-msvc
+            @rollup/rollup-win32-${{ matrix.arch }}-msvc \
+            @esbuild/win32-${{ matrix.arch }} \
+            lightningcss-win32-${{ matrix.arch }}-msvc \
+            @tailwindcss/oxide-win32-${{ matrix.arch }}-msvc
 
       - name: Build local decrypt core (macOS)
         if: matrix.platform == 'mac'
         shell: bash
         run: npm run build:local-decrypt-core
 
-      - name: Setup MSVC toolchain (Windows x64)
-        if: matrix.os == 'windows-latest' && matrix.arch == 'x64'
+      - name: Setup MSVC toolchain (Windows)
+        if: matrix.os == 'windows-latest'
         uses: ilammy/msvc-dev-cmd@v1
         with:
-          arch: x64
-
-      - name: Setup MSVC toolchain (Windows arm64)
-        if: matrix.os == 'windows-latest' && matrix.arch == 'arm64'
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: amd64_arm64
+          arch: ${{ matrix.arch == 'arm64' && 'amd64_arm64' || 'x64' }}
 
       - name: Build local decrypt core (Windows)
         if: matrix.os == 'windows-latest'
