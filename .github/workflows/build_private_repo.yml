@@ -91,7 +91,25 @@ jobs:
       - name: Build local decrypt core (macOS)
         if: matrix.platform == 'mac'
         shell: bash
-        run: npm run build:local-decrypt-core
+        env:
+          CORE_PATH: ${{ matrix.core_path }}
+        run: |
+          set -euo pipefail
+
+          if node -e "const p=require('./package.json');process.exit((p.scripts&&p.scripts['build:local-decrypt-core'])?0:1)"; then
+            echo "Using npm script: build:local-decrypt-core"
+            npm run build:local-decrypt-core
+          elif [ -f "./scripts/build-local-decrypt-core.sh" ]; then
+            echo "Using fallback script: ./scripts/build-local-decrypt-core.sh"
+            bash ./scripts/build-local-decrypt-core.sh
+          elif [ -f "$CORE_PATH" ]; then
+            echo "No core build script found, but core binary already exists at: $CORE_PATH"
+            echo "Skipping core build step."
+          else
+            echo "Missing local decrypt core build entry."
+            echo "Checked: package.json script build:local-decrypt-core, ./scripts/build-local-decrypt-core.sh, existing $CORE_PATH"
+            exit 1
+          fi
 
       - name: Setup MSVC toolchain (Windows)
         if: matrix.os == 'windows-latest'
