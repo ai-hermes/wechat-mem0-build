@@ -44,17 +44,14 @@ jobs:
           - os: macos-latest
             platform: mac
             arch: x64
-            build_script: build:mac:x64
             core_path: resources/bin/darwin-x64/wechat-decrypt-core
           - os: macos-latest
             platform: mac
             arch: arm64
-            build_script: build:mac:arm64
             core_path: resources/bin/darwin-arm64/wechat-decrypt-core
           - os: windows-latest
             platform: win
             arch: x64
-            build_script: build:win:x64
             core_path: resources/bin/win32-x64/wechat-decrypt-core.exe
     steps:
       - name: Checkout Private Repository
@@ -153,9 +150,43 @@ jobs:
         run: |
           node -e "const fs=require('fs');const p=process.env.CORE_PATH;if(!fs.existsSync(p)){console.error('Missing local decrypt core:',p);process.exit(1)};console.log('Found local decrypt core:',p)"
 
+      - name: Resolve build script from package.json
+        id: resolve_build_script
+        shell: bash
+        env:
+          MATRIX_PLATFORM: ${{ matrix.platform }}
+          MATRIX_ARCH: ${{ matrix.arch }}
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const scripts = pkg.scripts || {};
+          const platform = process.env.MATRIX_PLATFORM;
+          const arch = process.env.MATRIX_ARCH;
+          let candidates = [];
+
+          if (platform === 'mac') {
+            candidates = [`build:mac:${arch}`, 'build:mac'];
+          } else if (platform === 'win') {
+            candidates = [`build:win:${arch}`, 'build:win'];
+          } else {
+            console.error(`Unsupported platform: ${platform}`);
+            process.exit(1);
+          }
+
+          const selected = candidates.find((name) => scripts[name]);
+          if (!selected) {
+            console.error(`No matching build script for platform=${platform}, arch=${arch}. Tried: ${candidates.join(', ')}`);
+            process.exit(1);
+          }
+
+          console.log(`Using build script: ${selected}`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `script=${selected}\n`);
+          NODE
+
       - name: Build/release Electron app (macOS)
         if: matrix.platform == 'mac'
-        run: npm run ${{ matrix.build_script }}
+        run: npm run ${{ steps.resolve_build_script.outputs.script }}
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
           # For macOS code signing (optional)
@@ -168,7 +199,7 @@ jobs:
 
       - name: Build/release Electron app (Windows)
         if: matrix.platform == 'win'
-        run: npm run ${{ matrix.build_script }}
+        run: npm run ${{ steps.resolve_build_script.outputs.script }}
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
 
