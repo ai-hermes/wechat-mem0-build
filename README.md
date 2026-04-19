@@ -48,7 +48,7 @@ RethinkAI is an AI-powered desktop assistant that integrates long-term memory
 | Channel | Trigger | Tag |
 |---------|---------|-----|
 | **Stable (recommended)** | `workflow_dispatch` with `version` + `source_branch` | `v1.2.3` |
-| **Stable (legacy)** | Push of a `v*.*.*` tag | `v1.2.3` |
+| **Stable (legacy)** | Push of a `v*.*.*` tag (uses `main` as source branch) | `v1.2.3` |
 | **Nightly** | Scheduled daily at 04:00 CST (UTC 20:00) | `nightly` |
 
 Download the latest installer from the
@@ -73,6 +73,10 @@ What the workflow does:
 3. Creates the same tag and auto-generated release in `ai-hermes/wechat-mem0`.
 4. Builds installers from that exact source tag.
 5. Publishes release `version` in `ai-hermes/wechat-mem0-build` with auto-generated notes and artifacts.
+
+For **legacy tag-push** releases, the workflow uses `main` as `source_branch`.
+If the same tag already exists in `ai-hermes/wechat-mem0`, source tag/release
+creation is skipped and the existing source tag is used for the build.
 
 ---
 

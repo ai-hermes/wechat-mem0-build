@@ -62,12 +62,12 @@ jobs:
           fi
 
       - name: Create source tag and release
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
         shell: bash
         env:
           GH_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
-          SOURCE_BRANCH: ${{ github.event.inputs.source_branch }}
-          VERSION: ${{ github.event.inputs.version }}
+          SOURCE_BRANCH: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.source_branch || 'main' }}
+          VERSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}
         run: |
           set -euo pipefail
 
@@ -99,8 +99,12 @@ jobs:
             -H "$AUTH_HEADER" -H "$ACCEPT_HEADER" \
             "${API_ROOT}/git/ref/tags/${VERSION}")
           if [ "$TAG_CODE" = "200" ]; then
-            echo "Tag '$VERSION' already exists in ai-hermes/wechat-mem0. Failing fast."
-            exit 1
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "Tag '$VERSION' already exists in ai-hermes/wechat-mem0. Failing fast."
+              exit 1
+            fi
+            echo "Tag '$VERSION' already exists in ai-hermes/wechat-mem0. Skipping source tag/release creation."
+            exit 0
           fi
           if [ "$TAG_CODE" != "404" ]; then
             echo "Unexpected response while checking existing tag (HTTP $TAG_CODE)."
