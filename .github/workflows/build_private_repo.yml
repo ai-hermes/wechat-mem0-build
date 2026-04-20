@@ -162,16 +162,19 @@ jobs:
           - os: macos-latest
             platform: mac
             arch: x64
+            release_notes_owner: false
             core_path: resources/bin/darwin-x64/wechat-decrypt-core
             scanner_path: resources/bin/darwin-x64/find_all_keys_macos
           - os: macos-latest
             platform: mac
             arch: arm64
+            release_notes_owner: false
             core_path: resources/bin/darwin-arm64/wechat-decrypt-core
             scanner_path: resources/bin/darwin-arm64/find_all_keys_macos
           - os: windows-latest
             platform: win
             arch: x64
+            release_notes_owner: true
             core_path: resources/bin/win32-x64/wechat-decrypt-core.exe
             scanner_path: resources/bin/win32-x64/find_all_keys_windows.exe
     steps:
@@ -428,7 +431,7 @@ jobs:
           tag_name: ${{ needs.prepare_release.outputs.release_tag }}
           prerelease: ${{ needs.prepare_release.outputs.is_nightly == 'true' }}
           target_commitish: ${{ needs.prepare_release.outputs.release_target_commitish }}
-          generate_release_notes: ${{ needs.prepare_release.outputs.is_nightly != 'true' }}
+          generate_release_notes: ${{ needs.prepare_release.outputs.is_nightly != 'true' && matrix.release_notes_owner }}
           draft: false
           files: |
             release/*.exe
