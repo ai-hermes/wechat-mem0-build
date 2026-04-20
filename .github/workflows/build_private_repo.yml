@@ -188,31 +188,33 @@ jobs:
           node-version: 22
           cache: 'npm'
 
-      - name: Set default updater endpoint to Tencent COS
+      - name: Set updater publish config in electron-builder.yml
         shell: bash
         env:
           UPDATE_BASE_URL: ${{ env.AUTO_UPDATE_BASE_URL }}
+          UPDATE_GH_OWNER: ${{ github.repository_owner }}
+          UPDATE_GH_REPO: ${{ github.event.repository.name }}
         run: |
           set -euo pipefail
-          node - <<'NODE'
-          const fs = require('fs');
-          const path = 'package.json';
-          const updateBaseUrl = process.env.UPDATE_BASE_URL;
-          const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
+          ruby - <<'RUBY'
+          require 'yaml'
 
-          pkg.build = pkg.build || {};
-          const genericPublish = [{ provider: 'generic', url: updateBaseUrl }];
-          pkg.build.publish = genericPublish;
+          path = 'electron-builder.yml'
+          update_base_url = ENV.fetch('UPDATE_BASE_URL')
+          update_gh_owner = ENV.fetch('UPDATE_GH_OWNER')
+          update_gh_repo = ENV.fetch('UPDATE_GH_REPO')
 
-          const targets = ['mac', 'win', 'linux'];
-          for (const target of targets) {
-            pkg.build[target] = pkg.build[target] || {};
-            pkg.build[target].publish = genericPublish;
-          }
+          abort("Missing #{path} in source repository") unless File.exist?(path)
 
-          fs.writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`);
-          console.log(`Updated electron-builder publish config to Tencent COS: ${updateBaseUrl}`);
-          NODE
+          config = YAML.load_file(path) || {}
+          config['publish'] = [
+            { 'provider' => 'generic', 'url' => update_base_url },
+            { 'provider' => 'github', 'owner' => update_gh_owner, 'repo' => update_gh_repo }
+          ]
+
+          File.write(path, config.to_yaml)
+          puts "Updated #{path} publish providers: generic(#{update_base_url}) -> github(#{update_gh_owner}/#{update_gh_repo})"
+          RUBY
 
       - name: Update version from tag
         if: startsWith(needs.prepare_release.outputs.release_tag, 'v')
@@ -446,8 +448,8 @@ jobs:
           COS_ADDRESSING_STYLE: virtual
           RELEASE_TAG: ${{ needs.prepare_release.outputs.release_tag }}
           IS_NIGHTLY: ${{ needs.prepare_release.outputs.is_nightly }}
-          AWS_ACCESS_KEY_ID: ${{ env.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
 
@@ -455,7 +457,7 @@ jobs:
           SECRET_KEY="${AWS_SECRET_ACCESS_KEY:-}"
 
           if [ -z "${ACCESS_KEY}" ] || [ -z "${SECRET_KEY}" ]; then
-            echo "Missing COS credentials. Please provide AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY env vars."
+            echo "Missing COS credentials. Please provide AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY secrets."
             exit 1
           fi
 

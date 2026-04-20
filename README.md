@@ -151,8 +151,8 @@ Actions** before running the workflow.
 | `APPLE_ID` | Apple ID used for notarization |
 | `APPLE_APP_SPECIFIC_PASSWORD` | App-specific password for notarization |
 | `APPLE_TEAM_ID` | Apple Developer Team ID |
-| `AWS_ACCESS_KEY_ID` | Tencent COS S3 access key ID |
-| `AWS_SECRET_ACCESS_KEY` | Tencent COS S3 secret key |
+| `AWS_ACCESS_KEY_ID` | Tencent COS S3 access key ID (GitHub Actions Secret) |
+| `AWS_SECRET_ACCESS_KEY` | Tencent COS S3 secret key (GitHub Actions Secret) |
 
 Tencent COS upload settings in workflow:
 
