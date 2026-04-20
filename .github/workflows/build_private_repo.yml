@@ -153,7 +153,7 @@ jobs:
       APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      AUTO_UPDATE_BASE_URL: https://rethinkai-1251009550.cos.ap-shanghai.myqcloud.com
+      AUTO_UPDATE_BASE_URL: https://rethinkai-static.spotty.com.cn
       
     strategy:
       fail-fast: false
@@ -446,18 +446,16 @@ jobs:
           COS_ADDRESSING_STYLE: virtual
           RELEASE_TAG: ${{ needs.prepare_release.outputs.release_tag }}
           IS_NIGHTLY: ${{ needs.prepare_release.outputs.is_nightly }}
-          AWS_ACCESS_KEY_ID_FROM_SECRET: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY_FROM_SECRET: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws_access_key_id: ${{ env.aws_access_key_id }}
           aws_secret_access_key: ${{ env.aws_secret_access_key }}
         run: |
           set -euo pipefail
 
-          ACCESS_KEY="${aws_access_key_id:-${AWS_ACCESS_KEY_ID_FROM_SECRET:-}}"
-          SECRET_KEY="${aws_secret_access_key:-${AWS_SECRET_ACCESS_KEY_FROM_SECRET:-}}"
+          ACCESS_KEY="${aws_access_key_id:-}"
+          SECRET_KEY="${aws_secret_access_key:-}"
 
           if [ -z "${ACCESS_KEY}" ] || [ -z "${SECRET_KEY}" ]; then
-            echo "Missing COS credentials. Please provide aws_access_key_id/aws_secret_access_key env vars or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY secrets."
+            echo "Missing COS credentials. Please provide aws_access_key_id/aws_secret_access_key env vars."
             exit 1
           fi
 

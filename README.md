@@ -57,7 +57,7 @@ Download the latest installer from the
 [Releases](../../releases/latest) page.
 
 Default in-app update endpoint:
-`https://rethinkai-1251009550.cos.ap-shanghai.myqcloud.com`
+`https://rethinkai-static.spotty.com.cn`
 
 ---
 
