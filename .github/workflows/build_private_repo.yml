@@ -196,25 +196,60 @@ jobs:
           UPDATE_GH_REPO: ${{ github.event.repository.name }}
         run: |
           set -euo pipefail
-          ruby - <<'RUBY'
-          require 'yaml'
+          node - <<'NODE'
+          const fs = require('fs');
 
-          path = 'electron-builder.yml'
-          update_base_url = ENV.fetch('UPDATE_BASE_URL')
-          update_gh_owner = ENV.fetch('UPDATE_GH_OWNER')
-          update_gh_repo = ENV.fetch('UPDATE_GH_REPO')
+          const path = 'electron-builder.yml';
+          const updateBaseUrl = process.env.UPDATE_BASE_URL;
+          const updateGhOwner = process.env.UPDATE_GH_OWNER;
+          const updateGhRepo = process.env.UPDATE_GH_REPO;
 
-          abort("Missing #{path} in source repository") unless File.exist?(path)
+          if (!fs.existsSync(path)) {
+            console.error(`Missing ${path} in source repository`);
+            process.exit(1);
+          }
 
-          config = YAML.load_file(path) || {}
-          config['publish'] = [
-            { 'provider' => 'generic', 'url' => update_base_url },
-            { 'provider' => 'github', 'owner' => update_gh_owner, 'repo' => update_gh_repo }
-          ]
+          const publishBlock = [
+            'publish:',
+            '  - provider: generic',
+            `    url: ${updateBaseUrl}`,
+            '  - provider: github',
+            `    owner: ${updateGhOwner}`,
+            `    repo: ${updateGhRepo}`,
+            ''
+          ].join('\n');
 
-          File.write(path, config.to_yaml)
-          puts "Updated #{path} publish providers: generic(#{update_base_url}) -> github(#{update_gh_owner}/#{update_gh_repo})"
-          RUBY
+          const content = fs.readFileSync(path, 'utf8');
+          const lines = content.split('\n');
+          const key = 'publish:';
+          let start = -1;
+
+          for (let i = 0; i < lines.length; i += 1) {
+            if (lines[i].trimStart() === key && !lines[i].startsWith(' ')) {
+              start = i;
+              break;
+            }
+          }
+
+          let output;
+          if (start === -1) {
+            output = `${publishBlock}\n${content.replace(/^\n+/, '')}`;
+          } else {
+            let end = lines.length;
+            for (let i = start + 1; i < lines.length; i += 1) {
+              if (/^[A-Za-z0-9_.-]+\s*:/.test(lines[i])) {
+                end = i;
+                break;
+              }
+            }
+            const before = lines.slice(0, start).join('\n');
+            const after = lines.slice(end).join('\n');
+            output = `${before ? `${before}\n` : ''}${publishBlock}${after ? `\n${after}` : ''}`;
+          }
+
+          fs.writeFileSync(path, `${output.replace(/\n{3,}/g, '\n\n').trimEnd()}\n`);
+          console.log(`Updated ${path} publish providers: generic(${updateBaseUrl}) -> github(${updateGhOwner}/${updateGhRepo})`);
+          NODE
 
       - name: Update version from tag
         if: startsWith(needs.prepare_release.outputs.release_tag, 'v')
