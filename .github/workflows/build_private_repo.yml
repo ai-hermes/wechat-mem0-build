@@ -153,7 +153,7 @@ jobs:
       APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      AUTO_UPDATE_BASE_URL: https://rethinkai-static.spotty.com.cn
+      AUTO_UPDATE_BASE_URL: https://rethinkai.oss-cn-shanghai.aliyuncs.com
       
     strategy:
       fail-fast: false
