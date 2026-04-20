@@ -40,6 +40,8 @@ RethinkAI is an AI-powered desktop assistant that integrates long-term memory
 5. Builds platform-specific Electron installers.
 6. Signs and notarizes macOS binaries using Apple Developer credentials.
 7. Uploads all artifacts to a GitHub Release in this build repository.
+8. Uploads the same artifacts to Tencent COS (S3-compatible storage).
+9. Sets app auto-update publish metadata to Tencent COS by default.
 
 ---
 
@@ -53,6 +55,9 @@ RethinkAI is an AI-powered desktop assistant that integrates long-term memory
 
 Download the latest installer from the
 [Releases](../../releases/latest) page.
+
+Default in-app update endpoint:
+`https://rethinkai-static.spotty.com.cn`
 
 ---
 
@@ -116,6 +121,8 @@ Setup Node 22 + npm ci
         │
         ▼
 softprops/action-gh-release  →  GitHub Release
+        │
+        └── aws s3 cp (COS endpoint) → Tencent COS
 ```
 
 On a **nightly** run, existing release assets are cleaned up before uploading
@@ -144,6 +151,15 @@ Actions** before running the workflow.
 | `APPLE_ID` | Apple ID used for notarization |
 | `APPLE_APP_SPECIFIC_PASSWORD` | App-specific password for notarization |
 | `APPLE_TEAM_ID` | Apple Developer Team ID |
+| `AWS_ACCESS_KEY_ID` | Tencent COS S3 access key ID (GitHub Actions Secret) |
+| `AWS_SECRET_ACCESS_KEY` | Tencent COS S3 secret key (GitHub Actions Secret) |
+
+Tencent COS upload settings in workflow:
+
+- Region: `ap-shanghai`
+- Endpoint: `https://cos.ap-shanghai.myqcloud.com`
+- S3 addressing style: `virtual`
+- Bucket: `rethinkai-1251009550`
 
 ---
 
