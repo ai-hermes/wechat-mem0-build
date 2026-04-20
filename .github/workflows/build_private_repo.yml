@@ -446,16 +446,16 @@ jobs:
           COS_ADDRESSING_STYLE: virtual
           RELEASE_TAG: ${{ needs.prepare_release.outputs.release_tag }}
           IS_NIGHTLY: ${{ needs.prepare_release.outputs.is_nightly }}
-          aws_access_key_id: ${{ env.aws_access_key_id }}
-          aws_secret_access_key: ${{ env.aws_secret_access_key }}
+          AWS_ACCESS_KEY_ID: ${{ env.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ env.AWS_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
 
-          ACCESS_KEY="${aws_access_key_id:-}"
-          SECRET_KEY="${aws_secret_access_key:-}"
+          ACCESS_KEY="${AWS_ACCESS_KEY_ID:-}"
+          SECRET_KEY="${AWS_SECRET_ACCESS_KEY:-}"
 
           if [ -z "${ACCESS_KEY}" ] || [ -z "${SECRET_KEY}" ]; then
-            echo "Missing COS credentials. Please provide aws_access_key_id/aws_secret_access_key env vars."
+            echo "Missing COS credentials. Please provide AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY env vars."
             exit 1
           fi
 
