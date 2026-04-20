@@ -462,16 +462,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          ACCESS_KEY="${AWS_ACCESS_KEY_ID:-}"
-          SECRET_KEY="${AWS_SECRET_ACCESS_KEY:-}"
-
-          if [ -z "${ACCESS_KEY}" ] || [ -z "${SECRET_KEY}" ]; then
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
             echo "Missing COS credentials. Please provide AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY secrets."
             exit 1
           fi
 
-          export AWS_ACCESS_KEY_ID="${ACCESS_KEY}"
-          export AWS_SECRET_ACCESS_KEY="${SECRET_KEY}"
           export AWS_DEFAULT_REGION="${COS_REGION}"
 
           mkdir -p "${HOME}/.aws"
