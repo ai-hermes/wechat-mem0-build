@@ -188,69 +188,6 @@ jobs:
           node-version: 22
           cache: 'npm'
 
-      - name: Set updater publish config in electron-builder.yml
-        shell: bash
-        env:
-          UPDATE_BASE_URL: ${{ env.AUTO_UPDATE_BASE_URL }}
-          UPDATE_GH_OWNER: ${{ github.repository_owner }}
-          UPDATE_GH_REPO: ${{ github.event.repository.name }}
-        run: |
-          set -euo pipefail
-          node - <<'NODE'
-          const fs = require('fs');
-
-          const path = 'electron-builder.yml';
-          const updateBaseUrl = process.env.UPDATE_BASE_URL;
-          const updateGhOwner = process.env.UPDATE_GH_OWNER;
-          const updateGhRepo = process.env.UPDATE_GH_REPO;
-
-          if (!fs.existsSync(path)) {
-            console.error(`Missing ${path} in source repository`);
-            process.exit(1);
-          }
-
-          const publishBlock = [
-            'publish:',
-            '  - provider: generic',
-            `    url: ${updateBaseUrl}`,
-            '  - provider: github',
-            `    owner: ${updateGhOwner}`,
-            `    repo: ${updateGhRepo}`,
-            ''
-          ].join('\n');
-
-          const content = fs.readFileSync(path, 'utf8');
-          const lines = content.split('\n');
-          const key = 'publish:';
-          let start = -1;
-
-          for (let i = 0; i < lines.length; i += 1) {
-            if (lines[i].trimStart() === key && !lines[i].startsWith(' ')) {
-              start = i;
-              break;
-            }
-          }
-
-          let output;
-          if (start === -1) {
-            output = `${publishBlock}\n${content.replace(/^\n+/, '')}`;
-          } else {
-            let end = lines.length;
-            for (let i = start + 1; i < lines.length; i += 1) {
-              if (/^[A-Za-z0-9_.-]+\s*:/.test(lines[i])) {
-                end = i;
-                break;
-              }
-            }
-            const before = lines.slice(0, start).join('\n');
-            const after = lines.slice(end).join('\n');
-            output = `${before ? `${before}\n` : ''}${publishBlock}${after ? `\n${after}` : ''}`;
-          }
-
-          fs.writeFileSync(path, `${output.replace(/\n{3,}/g, '\n\n').trimEnd()}\n`);
-          console.log(`Updated ${path} publish providers: generic(${updateBaseUrl}) -> github(${updateGhOwner}/${updateGhRepo})`);
-          NODE
-
       - name: Update version from tag
         if: startsWith(needs.prepare_release.outputs.release_tag, 'v')
         shell: bash
@@ -262,6 +199,40 @@ jobs:
 
       - name: Install Dependencies
         run: npm ci --registry=https://registry.npmjs.org
+
+      - name: Set updater publish config in electron-builder.yml
+        shell: bash
+        env:
+          UPDATE_BASE_URL: ${{ env.AUTO_UPDATE_BASE_URL }}
+          UPDATE_GH_OWNER: ${{ github.repository_owner }}
+          UPDATE_GH_REPO: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          npm install --no-save yaml
+          node - <<'NODE'
+          const fs = require('fs');
+          const YAML = require('yaml');
+
+          const path = 'electron-builder.yml';
+          const updateBaseUrl = process.env.UPDATE_BASE_URL;
+          const updateGhOwner = process.env.UPDATE_GH_OWNER;
+          const updateGhRepo = process.env.UPDATE_GH_REPO;
+
+          if (!fs.existsSync(path)) {
+            console.error(`Missing ${path} in source repository`);
+            process.exit(1);
+          }
+
+          const content = fs.readFileSync(path, 'utf8');
+          const config = YAML.parse(content) || {};
+          config.publish = [
+            { provider: 'generic', url: updateBaseUrl },
+            { provider: 'github', owner: updateGhOwner, repo: updateGhRepo }
+          ];
+
+          fs.writeFileSync(path, YAML.stringify(config));
+          console.log(`Updated ${path} publish providers: generic(${updateBaseUrl}) -> github(${updateGhOwner}/${updateGhRepo})`);
+          NODE
 
       - name: Install native dependencies (Windows)
         if: matrix.os == 'windows-latest'
