@@ -450,7 +450,7 @@ jobs:
         env:
           ALI_BUCKET_NAME: rethinkai
           ALI_REGION: cn-shanghai
-          ALI_ENDPOINT: oss-cn-shanghai.aliyuncs.com
+          ALI_ENDPOINT: s3.oss-cn-shanghai.aliyuncs.com
           ALI_ADDRESSING_STYLE: virtual
           RELEASE_TAG: ${{ needs.prepare_release.outputs.release_tag }}
           IS_NIGHTLY: ${{ needs.prepare_release.outputs.is_nightly }}
@@ -467,6 +467,8 @@ jobs:
           export AWS_ACCESS_KEY_ID="${ALI_ACCESS_KEY}"
           export AWS_SECRET_ACCESS_KEY="${ALI_SECRET_KEY}"
           export AWS_DEFAULT_REGION="${ALI_REGION}"
+          export AWS_REQUEST_CHECKSUM_CALCULATION="when_required"
+          export AWS_RESPONSE_CHECKSUM_VALIDATION="when_required"
           ALI_ENDPOINT_URL="https://${ALI_ENDPOINT}"
 
           mkdir -p "${HOME}/.aws"
@@ -475,6 +477,7 @@ jobs:
           region = ${ALI_REGION}
           s3 =
             addressing_style = ${ALI_ADDRESSING_STYLE}
+            multipart_threshold = 5GB
           EOF
 
           if ! command -v aws >/dev/null 2>&1; then
