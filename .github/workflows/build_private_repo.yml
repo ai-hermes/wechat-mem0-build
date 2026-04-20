@@ -444,34 +444,37 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
 
-      - name: Upload artifacts to Tencent COS (S3)
+      - name: Upload artifacts to Alibaba OSS (S3)
         if: needs.prepare_release.outputs.should_release == 'true'
         shell: bash
         env:
-          COS_BUCKET: rethinkai-1251009550
-          COS_REGION: ap-shanghai
-          COS_ENDPOINT_URL: https://cos.ap-shanghai.myqcloud.com
-          COS_ADDRESSING_STYLE: virtual
+          ALI_BUCKET_NAME: rethinkai
+          ALI_REGION: cn-shanghai
+          ALI_ENDPOINT: oss-cn-shanghai.aliyuncs.com
+          ALI_ADDRESSING_STYLE: virtual
           RELEASE_TAG: ${{ needs.prepare_release.outputs.release_tag }}
           IS_NIGHTLY: ${{ needs.prepare_release.outputs.is_nightly }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          ALI_ACCESS_KEY: ${{ secrets.ALI_ACCESS_KEY || secrets.AWS_ACCESS_KEY_ID }}
+          ALI_SECRET_KEY: ${{ secrets.ALI_SECRET_KEY || secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
 
-          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
-            echo "Missing COS credentials. Please provide AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY secrets."
+          if [ -z "${ALI_ACCESS_KEY:-}" ] || [ -z "${ALI_SECRET_KEY:-}" ]; then
+            echo "Missing Aliyun OSS credentials. Please provide ALI_ACCESS_KEY/ALI_SECRET_KEY (or fallback AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY)."
             exit 1
           fi
 
-          export AWS_DEFAULT_REGION="${COS_REGION}"
+          export AWS_ACCESS_KEY_ID="${ALI_ACCESS_KEY}"
+          export AWS_SECRET_ACCESS_KEY="${ALI_SECRET_KEY}"
+          export AWS_DEFAULT_REGION="${ALI_REGION}"
+          ALI_ENDPOINT_URL="https://${ALI_ENDPOINT}"
 
           mkdir -p "${HOME}/.aws"
           cat > "${HOME}/.aws/config" <<EOF
           [default]
-          region = ${COS_REGION}
+          region = ${ALI_REGION}
           s3 =
-            addressing_style = ${COS_ADDRESSING_STYLE}
+            addressing_style = ${ALI_ADDRESSING_STYLE}
           EOF
 
           if ! command -v aws >/dev/null 2>&1; then
@@ -482,7 +485,7 @@ jobs:
           shopt -s nullglob
           files=(release/*.exe release/*.zip release/*.dmg release/*.AppImage release/*.snap release/*.deb release/*.rpm release/*.tar.gz release/*.yml release/*.blockmap)
           if [ "${#files[@]}" -eq 0 ]; then
-            echo "No artifacts found under release/. Skipping COS upload."
+            echo "No artifacts found under release/. Skipping OSS upload."
             exit 0
           fi
 
@@ -510,18 +513,18 @@ jobs:
             base="$(basename "${file}")"
 
             if [[ "${base}" == *.yml ]]; then
-              aws s3 cp "${file}" "s3://${COS_BUCKET}/${base}" \
-                --endpoint-url "${COS_ENDPOINT_URL}" \
+              aws s3 cp "${file}" "s3://${ALI_BUCKET_NAME}/${base}" \
+                --endpoint-url "${ALI_ENDPOINT_URL}" \
                 --cache-control "no-cache" \
                 --no-progress
             else
-              aws s3 cp "${file}" "s3://${COS_BUCKET}/${base}" \
-                --endpoint-url "${COS_ENDPOINT_URL}" \
+              aws s3 cp "${file}" "s3://${ALI_BUCKET_NAME}/${base}" \
+                --endpoint-url "${ALI_ENDPOINT_URL}" \
                 --cache-control "public, max-age=31536000, immutable" \
                 --no-progress
             fi
 
-            echo "Uploaded ${file} -> s3://${COS_BUCKET}/${base}"
+            echo "Uploaded ${file} -> s3://${ALI_BUCKET_NAME}/${base}"
           done
 
           # Keep a versioned snapshot for all release tags as backup/rollback source.
@@ -529,8 +532,8 @@ jobs:
           for file in "${files[@]}"; do
             [ -f "${file}" ] || continue
             base="$(basename "${file}")"
-            aws s3 cp "${file}" "s3://${COS_BUCKET}/${version_prefix}${base}" \
-              --endpoint-url "${COS_ENDPOINT_URL}" \
+            aws s3 cp "${file}" "s3://${ALI_BUCKET_NAME}/${version_prefix}${base}" \
+              --endpoint-url "${ALI_ENDPOINT_URL}" \
               --no-progress
           done
-          echo "Uploaded versioned snapshot to s3://${COS_BUCKET}/${version_prefix}"
+          echo "Uploaded versioned snapshot to s3://${ALI_BUCKET_NAME}/${version_prefix}"
