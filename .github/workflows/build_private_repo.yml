@@ -540,3 +540,148 @@ jobs:
               --no-progress
           done
           echo "Uploaded versioned snapshot to s3://${ALI_BUCKET_NAME}/${version_prefix}"
+
+  update_release_manifest:
+    needs:
+      - prepare_release
+      - build
+    runs-on: ubuntu-latest
+    if: needs.prepare_release.outputs.should_release == 'true'
+    env:
+      ALI_BUCKET_NAME: rethinkai
+      ALI_REGION: cn-shanghai
+      ALI_ENDPOINT: s3.oss-cn-shanghai.aliyuncs.com
+      ALI_ADDRESSING_STYLE: virtual
+      RELEASE_TAG: ${{ needs.prepare_release.outputs.release_tag }}
+      IS_NIGHTLY: ${{ needs.prepare_release.outputs.is_nightly }}
+      ALI_ACCESS_KEY: ${{ secrets.ALI_ACCESS_KEY || secrets.AWS_ACCESS_KEY_ID }}
+      ALI_SECRET_KEY: ${{ secrets.ALI_SECRET_KEY || secrets.AWS_SECRET_ACCESS_KEY }}
+      GH_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+    steps:
+      - name: Update releases.json on Alibaba OSS (S3)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Nightly builds are intentionally excluded from web download index.
+          if [ "${IS_NIGHTLY}" = "true" ]; then
+            echo "Nightly build detected; skipping releases.json update."
+            exit 0
+          fi
+
+          if [[ ! "${RELEASE_TAG}" =~ ^v ]]; then
+            echo "Release tag '${RELEASE_TAG}' is not a version tag; skipping releases.json update."
+            exit 0
+          fi
+
+          if [ -z "${ALI_ACCESS_KEY:-}" ] || [ -z "${ALI_SECRET_KEY:-}" ]; then
+            echo "Missing Aliyun OSS credentials. Please provide ALI_ACCESS_KEY/ALI_SECRET_KEY (or fallback AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY)."
+            exit 1
+          fi
+
+          if [ -z "${GH_PAT:-}" ]; then
+            echo "Missing PRIVATE_REPO_PAT for querying release assets."
+            exit 1
+          fi
+
+          export AWS_ACCESS_KEY_ID="${ALI_ACCESS_KEY}"
+          export AWS_SECRET_ACCESS_KEY="${ALI_SECRET_KEY}"
+          export AWS_DEFAULT_REGION="${ALI_REGION}"
+          export AWS_REQUEST_CHECKSUM_CALCULATION="when_required"
+          export AWS_RESPONSE_CHECKSUM_VALIDATION="when_required"
+          ALI_ENDPOINT_URL="https://${ALI_ENDPOINT}"
+
+          mkdir -p "${HOME}/.aws"
+          cat > "${HOME}/.aws/config" <<EOF
+          [default]
+          region = ${ALI_REGION}
+          s3 =
+            addressing_style = ${ALI_ADDRESSING_STYLE}
+            multipart_threshold = 5GB
+          EOF
+
+          if ! command -v aws >/dev/null 2>&1; then
+            echo "aws CLI not found on runner."
+            exit 1
+          fi
+
+          if ! command -v jq >/dev/null 2>&1; then
+            echo "jq not found on runner."
+            exit 1
+          fi
+
+          version="${RELEASE_TAG#v}"
+          release_date="$(TZ=Asia/Shanghai date +%F)"
+
+          release_api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
+          http_code=$(curl -sS -o /tmp/release.json -w "%{http_code}" \
+            -H "Authorization: token ${GH_PAT}" \
+            -H "Accept: application/vnd.github+json" \
+            "${release_api}")
+          if [ "${http_code}" != "200" ]; then
+            echo "Failed to query release assets for ${RELEASE_TAG} (HTTP ${http_code})."
+            cat /tmp/release.json
+            exit 1
+          fi
+
+          jq -r '.assets[].name' /tmp/release.json | sort -u > /tmp/release_assets.txt
+
+          mac_arm64="$(grep -E 'arm64|aarch64' /tmp/release_assets.txt | grep -E '\.dmg$' | head -n 1 || true)"
+          mac_x64="$(grep -E 'x64|amd64|x86_64' /tmp/release_assets.txt | grep -E '\.dmg$' | head -n 1 || true)"
+          windows_exe="$(grep -E '\.exe$' /tmp/release_assets.txt | grep -E 'setup|installer' | head -n 1 || true)"
+          if [ -z "${windows_exe}" ]; then
+            windows_exe="$(grep -E '\.exe$' /tmp/release_assets.txt | head -n 1 || true)"
+          fi
+
+          jq -n \
+            --arg mac_arm64 "${mac_arm64}" \
+            --arg mac_x64 "${mac_x64}" \
+            --arg windows "${windows_exe}" \
+            '{
+              "mac-arm64": $mac_arm64,
+              "mac-x64": $mac_x64,
+              "windows": $windows
+            }
+            | with_entries(select(.value != ""))' > /tmp/downloads.json
+
+          if [ "$(jq 'length' /tmp/downloads.json)" -eq 0 ]; then
+            echo "No recognized downloads found in release assets; skipping releases.json update."
+            exit 0
+          fi
+
+          manifest_key="releases.json"
+          if aws s3 cp "s3://${ALI_BUCKET_NAME}/${manifest_key}" /tmp/releases.json \
+            --endpoint-url "${ALI_ENDPOINT_URL}" \
+            --no-progress; then
+            echo "Loaded existing s3://${ALI_BUCKET_NAME}/${manifest_key}"
+          else
+            echo '{"latest":"","releases":[]}' > /tmp/releases.json
+            echo "No existing releases.json found. Initialized a new manifest."
+          fi
+
+          jq -n \
+            --arg version "${version}" \
+            --arg date "${release_date}" \
+            --slurpfile downloads /tmp/downloads.json \
+            '{version: $version, date: $date, downloads: $downloads[0]}' > /tmp/current_release_entry.json
+
+          jq \
+            --slurpfile current /tmp/current_release_entry.json \
+            '
+            .latest = $current[0].version
+            | .releases = (
+                [$current[0]]
+                + ((.releases // []) | map(select(.version != $current[0].version)))
+              )[:20]
+            ' /tmp/releases.json > /tmp/releases.next.json
+
+          mv /tmp/releases.next.json /tmp/releases.json
+          cat /tmp/releases.json
+
+          aws s3 cp /tmp/releases.json "s3://${ALI_BUCKET_NAME}/${manifest_key}" \
+            --endpoint-url "${ALI_ENDPOINT_URL}" \
+            --cache-control "no-cache" \
+            --content-type "application/json" \
+            --no-progress
+
+          echo "Updated s3://${ALI_BUCKET_NAME}/${manifest_key} for version ${version}"
