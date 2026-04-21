@@ -686,7 +686,7 @@ jobs:
             | .releases = (
                 [$current[0]]
                 + ((.releases // []) | map(select(.version != $current[0].version)))
-              )[:20]
+              )[:3]
             ' /tmp/releases.json > /tmp/releases.next.json
 
           mv /tmp/releases.next.json /tmp/releases.json
@@ -699,3 +699,150 @@ jobs:
             --no-progress
 
           echo "Updated s3://${ALI_BUCKET_NAME}/${manifest_key} for version ${version}"
+
+      - name: Prune OSS version snapshots (keep latest 3 + nightly)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ALI_ACCESS_KEY:-}" ] || [ -z "${ALI_SECRET_KEY:-}" ]; then
+            echo "Missing Aliyun OSS credentials. Please provide ALI_ACCESS_KEY/ALI_SECRET_KEY (or fallback AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY)."
+            exit 1
+          fi
+
+          export AWS_ACCESS_KEY_ID="${ALI_ACCESS_KEY}"
+          export AWS_SECRET_ACCESS_KEY="${ALI_SECRET_KEY}"
+          export AWS_DEFAULT_REGION="${ALI_REGION}"
+          export AWS_REQUEST_CHECKSUM_CALCULATION="when_required"
+          export AWS_RESPONSE_CHECKSUM_VALIDATION="when_required"
+          ALI_ENDPOINT_URL="https://${ALI_ENDPOINT}"
+
+          mkdir -p "${HOME}/.aws"
+          cat > "${HOME}/.aws/config" <<EOF
+          [default]
+          region = ${ALI_REGION}
+          s3 =
+            addressing_style = ${ALI_ADDRESSING_STYLE}
+            multipart_threshold = 5GB
+          EOF
+
+          if ! command -v aws >/dev/null 2>&1; then
+            echo "aws CLI not found on runner."
+            exit 1
+          fi
+
+          if ! command -v jq >/dev/null 2>&1; then
+            echo "jq not found on runner."
+            exit 1
+          fi
+
+          aws s3api list-objects-v2 \
+            --bucket "${ALI_BUCKET_NAME}" \
+            --prefix "versions/" \
+            --endpoint-url "${ALI_ENDPOINT_URL}" \
+            --output json > /tmp/versions_objects.json
+
+          if [ "$(jq '.KeyCount // 0' /tmp/versions_objects.json)" -eq 0 ]; then
+            echo "No version snapshots found under s3://${ALI_BUCKET_NAME}/versions/. Nothing to prune."
+            exit 0
+          fi
+
+          jq -r '
+            [.Contents[]? | select(.Key | test("^versions/[^/]+/")) | {tag: (.Key | split("/")[1]), ts: .LastModified}]
+            | group_by(.tag)
+            | map({tag: .[0].tag, ts: (map(.ts) | max)})
+            | sort_by(.ts)
+            | reverse
+            | .[] | "\(.tag)\t\(.ts)"
+          ' /tmp/versions_objects.json > /tmp/version_tags_sorted.tsv
+
+          if [ ! -s /tmp/version_tags_sorted.tsv ]; then
+            echo "No valid version tag directories found under versions/. Nothing to prune."
+            exit 0
+          fi
+
+          keep_file="/tmp/keep_tags.txt"
+          delete_file="/tmp/delete_tags.txt"
+          : > "${keep_file}"
+          : > "${delete_file}"
+
+          echo "nightly" >> "${keep_file}"
+          stable_kept=0
+          while IFS=$'\t' read -r tag _; do
+            [ -n "${tag}" ] || continue
+            if [[ "${tag}" =~ ^v ]] && [ "${stable_kept}" -lt 3 ]; then
+              echo "${tag}" >> "${keep_file}"
+              stable_kept=$((stable_kept + 1))
+            fi
+          done < /tmp/version_tags_sorted.tsv
+
+          sort -u "${keep_file}" -o "${keep_file}"
+
+          while IFS=$'\t' read -r tag _; do
+            [ -n "${tag}" ] || continue
+            if ! grep -Fxq "${tag}" "${keep_file}"; then
+              echo "${tag}" >> "${delete_file}"
+            fi
+          done < /tmp/version_tags_sorted.tsv
+
+          if [ ! -s "${delete_file}" ]; then
+            echo "No old version snapshots to delete."
+            echo "Kept tags:"
+            cat "${keep_file}"
+            exit 0
+          fi
+
+          jq -r '
+            .Contents[]?
+            | select(.Key | test("^versions/[^/]+/"))
+            | "\(.Key | split("/")[1])\t\(.Key)"
+          ' /tmp/versions_objects.json > /tmp/version_objects.tsv
+
+          : > /tmp/keep_basenames.txt
+          : > /tmp/delete_basenames.txt
+
+          while IFS= read -r tag; do
+            [ -n "${tag}" ] || continue
+            awk -F '\t' -v t="${tag}" '$1==t {print $2}' /tmp/version_objects.tsv \
+              | awk -F '/' '{print $NF}' >> /tmp/keep_basenames.txt
+          done < "${keep_file}"
+          sort -u /tmp/keep_basenames.txt -o /tmp/keep_basenames.txt
+
+          while IFS= read -r tag; do
+            [ -n "${tag}" ] || continue
+            awk -F '\t' -v t="${tag}" '$1==t {print $2}' /tmp/version_objects.tsv \
+              | awk -F '/' '{print $NF}' >> /tmp/delete_basenames.txt
+          done < "${delete_file}"
+          sort -u /tmp/delete_basenames.txt -o /tmp/delete_basenames.txt
+
+          # Root-level artifact cleanup: remove files that only belong to pruned tags.
+          comm -23 /tmp/delete_basenames.txt /tmp/keep_basenames.txt > /tmp/root_delete_keys.txt || true
+
+          echo "Keeping version snapshots:"
+          cat "${keep_file}"
+          echo "Deleting old version snapshots:"
+          cat "${delete_file}"
+
+          while IFS= read -r tag; do
+            [ -n "${tag}" ] || continue
+            echo "Deleting s3://${ALI_BUCKET_NAME}/versions/${tag}/"
+            aws s3 rm "s3://${ALI_BUCKET_NAME}/versions/${tag}/" \
+              --recursive \
+              --endpoint-url "${ALI_ENDPOINT_URL}" \
+              --no-progress
+          done < "${delete_file}"
+
+          if [ -s /tmp/root_delete_keys.txt ]; then
+            echo "Deleting root-level artifacts from pruned versions:"
+            cat /tmp/root_delete_keys.txt
+            while IFS= read -r key; do
+              [ -n "${key}" ] || continue
+              aws s3 rm "s3://${ALI_BUCKET_NAME}/${key}" \
+                --endpoint-url "${ALI_ENDPOINT_URL}" \
+                --no-progress || true
+            done < /tmp/root_delete_keys.txt
+          else
+            echo "No root-level artifacts require deletion."
+          fi
+
+          echo "OSS version snapshot pruning completed."
