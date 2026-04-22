@@ -222,9 +222,13 @@ jobs:
             { provider: 'generic', url: updateBaseUrl },
             { provider: 'github', owner: updateGhOwner, repo: updateGhRepo }
           ];
+          // Force native module rebuild for target arch in CI.
+          // This avoids better-sqlite3 arch mismatch (e.g. arm64 binary inside x64 app).
+          config.npmRebuild = true;
+          config.buildDependenciesFromSource = false;
 
           fs.writeFileSync(path, YAML.stringify(config));
-          console.log(`Updated ${path} publish providers: generic(${updateBaseUrl}) -> github(${updateGhOwner}/${updateGhRepo})`);
+          console.log(`Updated ${path}: publish providers + npmRebuild=true`);
           NODE
 
       - name: Install native dependencies (Windows)
@@ -403,6 +407,27 @@ jobs:
           # APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
+      - name: Verify better-sqlite3 binary arch (macOS)
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          X64_BIN="release/mac/Rethink AI.app/Contents/Resources/app.asar.unpacked/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
+          ARM64_BIN="release/mac-arm64/Rethink AI.app/Contents/Resources/app.asar.unpacked/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
+
+          [ -f "$X64_BIN" ] || { echo "Missing x64 better_sqlite3.node"; exit 1; }
+          [ -f "$ARM64_BIN" ] || { echo "Missing arm64 better_sqlite3.node"; exit 1; }
+
+          x64_archs="$(lipo -archs "$X64_BIN")"
+          arm64_archs="$(lipo -archs "$ARM64_BIN")"
+
+          echo "$X64_BIN -> $x64_archs"
+          echo "$ARM64_BIN -> $arm64_archs"
+
+          echo "$x64_archs" | grep -Eq 'x86_64h?|x86_64' || { echo "x64 app contains wrong sqlite binary arch"; exit 1; }
+          echo "$arm64_archs" | grep -Eq 'arm64' || { echo "arm64 app contains wrong sqlite binary arch"; exit 1; }
+
       - name: Build/release Electron app (Windows)
         if: matrix.platform == 'win'
         run: npm run ${{ steps.resolve_build_script.outputs.script }}
@@ -462,6 +487,16 @@ jobs:
             cat release/latest-mac.yml
             exit 1
           }
+
+          # Ensure latest-mac.yml references actual mac zip artifacts.
+          grep -Eo '[^[:space:]]+arm64[^[:space:]]+\.zip' release/latest-mac.yml | while read -r f; do
+            b="$(basename "$f")"
+            [ -f "release/$b" ] || { echo "latest-mac.yml arm64 zip missing: $b"; exit 1; }
+          done
+          grep -Eo '[^[:space:]]+x64[^[:space:]]+\.zip' release/latest-mac.yml | while read -r f; do
+            b="$(basename "$f")"
+            [ -f "release/$b" ] || { echo "latest-mac.yml x64 zip missing: $b"; exit 1; }
+          done
 
           # Validate latest*.yml references match files in release/.
           shopt -s nullglob
