@@ -529,6 +529,26 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
 
+      - name: Normalize mac updater metadata filenames
+        if: matrix.platform == 'mac'
+        shell: bash
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+
+          for channel in latest alpha beta; do
+            base="release/${channel}-mac.yml"
+            arm64="release/${channel}-mac-arm64.yml"
+
+            if [ "${TARGET_ARCH}" = "arm64" ] && [ -f "$base" ] && [ ! -f "$arm64" ]; then
+              mv "$base" "$arm64"
+              echo "Renamed $base -> $arm64 for arm64 updater metadata"
+            fi
+          done
+
+          ls -la release | grep -E 'mac.*\.yml' || true
+
       - name: Upload release artifacts from matrix job
         if: needs.prepare_release.outputs.should_release == 'true'
         uses: actions/upload-artifact@v4
