@@ -396,20 +396,22 @@ jobs:
         run: |
           set -euo pipefail
 
-          mapfile -t bins < <(find release -type f -name better_sqlite3.node)
-          if [ "${#bins[@]}" -eq 0 ]; then
-            echo "No better_sqlite3.node found under release/"
-            exit 1
-          fi
-
+          has_match=0
           has_x64=0
           has_arm64=0
-          for bin in "${bins[@]}"; do
+          while IFS= read -r bin; do
+            [ -n "$bin" ] || continue
+            has_match=1
             archs="$(lipo -archs "$bin" 2>/dev/null || true)"
             echo "$bin -> $archs"
             echo "$archs" | grep -Eq 'x86_64h?|x86_64' && has_x64=1 || true
             echo "$archs" | grep -Eq 'arm64' && has_arm64=1 || true
-          done
+          done < <(find release -type f -name better_sqlite3.node 2>/dev/null)
+
+          if [ "$has_match" -ne 1 ]; then
+            echo "No better_sqlite3.node found under release/"
+            exit 1
+          fi
 
           [ "$has_x64" -eq 1 ] || { echo "Missing x64 better_sqlite3.node in release outputs"; exit 1; }
           [ "$has_arm64" -eq 1 ] || { echo "Missing arm64 better_sqlite3.node in release outputs"; exit 1; }
