@@ -577,8 +577,40 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: release-*
-          merge-multiple: true
-          path: release
+          merge-multiple: false
+          path: artifacts
+
+      - name: Assemble release artifacts deterministically
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf release
+          mkdir -p release
+
+          # Copy non-metadata files from all matrix jobs.
+          for dir in artifacts/release-*; do
+            [ -d "$dir" ] || continue
+            find "$dir" -maxdepth 1 -type f ! -name '*-mac.yml' -exec cp -f {} release/ \;
+          done
+
+          # Keep x64 metadata as *-mac.yml from x64 job.
+          for channel in latest alpha beta; do
+            x64_meta="artifacts/release-mac-x64/${channel}-mac.yml"
+            [ -f "$x64_meta" ] && cp -f "$x64_meta" "release/${channel}-mac.yml"
+          done
+
+          # Normalize arm64 metadata to *-mac-arm64.yml from arm64 job.
+          for channel in latest alpha beta; do
+            arm64_meta="artifacts/release-mac-arm64/${channel}-mac.yml"
+            [ -f "$arm64_meta" ] && cp -f "$arm64_meta" "release/${channel}-mac-arm64.yml"
+
+            # If arm64 job already produced *-mac-arm64.yml, keep it as-is.
+            arm64_native="artifacts/release-mac-arm64/${channel}-mac-arm64.yml"
+            [ -f "$arm64_native" ] && cp -f "$arm64_native" "release/${channel}-mac-arm64.yml"
+          done
+
+          ls -la release
 
       - name: Validate release artifacts
         shell: bash
