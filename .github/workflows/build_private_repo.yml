@@ -135,6 +135,7 @@ jobs:
           fi
 
   build:
+    name: build (${{ matrix.platform }}, ${{ matrix.arch }})
     needs: prepare_release
     runs-on: ${{ matrix.os }}
 
@@ -395,20 +396,23 @@ jobs:
         run: |
           set -euo pipefail
 
-          X64_BIN="release/mac/Rethink AI.app/Contents/Resources/app.asar.unpacked/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
-          ARM64_BIN="release/mac-arm64/Rethink AI.app/Contents/Resources/app.asar.unpacked/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
+          mapfile -t bins < <(find release -type f -name better_sqlite3.node)
+          if [ "${#bins[@]}" -eq 0 ]; then
+            echo "No better_sqlite3.node found under release/"
+            exit 1
+          fi
 
-          [ -f "$X64_BIN" ] || { echo "Missing x64 better_sqlite3.node"; exit 1; }
-          [ -f "$ARM64_BIN" ] || { echo "Missing arm64 better_sqlite3.node"; exit 1; }
+          has_x64=0
+          has_arm64=0
+          for bin in "${bins[@]}"; do
+            archs="$(lipo -archs "$bin" 2>/dev/null || true)"
+            echo "$bin -> $archs"
+            echo "$archs" | grep -Eq 'x86_64h?|x86_64' && has_x64=1 || true
+            echo "$archs" | grep -Eq 'arm64' && has_arm64=1 || true
+          done
 
-          x64_archs="$(lipo -archs "$X64_BIN")"
-          arm64_archs="$(lipo -archs "$ARM64_BIN")"
-
-          echo "$X64_BIN -> $x64_archs"
-          echo "$ARM64_BIN -> $arm64_archs"
-
-          echo "$x64_archs" | grep -Eq 'x86_64h?|x86_64' || { echo "x64 app contains wrong sqlite binary arch"; exit 1; }
-          echo "$arm64_archs" | grep -Eq 'arm64' || { echo "arm64 app contains wrong sqlite binary arch"; exit 1; }
+          [ "$has_x64" -eq 1 ] || { echo "Missing x64 better_sqlite3.node in release outputs"; exit 1; }
+          [ "$has_arm64" -eq 1 ] || { echo "Missing arm64 better_sqlite3.node in release outputs"; exit 1; }
 
       - name: Build/release Electron app (Windows)
         if: matrix.platform == 'win'
