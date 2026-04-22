@@ -161,14 +161,7 @@ jobs:
         include:
           - os: macos-latest
             platform: mac
-            arch: x64
-            core_path: resources/bin/darwin-x64/wechat-decrypt-core
-            scanner_path: resources/bin/darwin-x64/find_all_keys_macos
-          - os: macos-latest
-            platform: mac
-            arch: arm64
-            core_path: resources/bin/darwin-arm64/wechat-decrypt-core
-            scanner_path: resources/bin/darwin-arm64/find_all_keys_macos
+            arch: universal
           - os: windows-latest
             platform: win
             arch: x64
@@ -229,9 +222,13 @@ jobs:
             { provider: 'generic', url: updateBaseUrl },
             { provider: 'github', owner: updateGhOwner, repo: updateGhRepo }
           ];
+          // Force native module rebuild for target arch in CI.
+          // This avoids better-sqlite3 arch mismatch (e.g. arm64 binary inside x64 app).
+          config.npmRebuild = true;
+          config.buildDependenciesFromSource = false;
 
           fs.writeFileSync(path, YAML.stringify(config));
-          console.log(`Updated ${path} publish providers: generic(${updateBaseUrl}) -> github(${updateGhOwner}/${updateGhRepo})`);
+          console.log(`Updated ${path}: publish providers + npmRebuild=true`);
           NODE
 
       - name: Install native dependencies (Windows)
@@ -336,11 +333,32 @@ jobs:
           Get-Item $coreTarget, $scannerTarget | Select-Object FullName,Length | Format-List
 
       - name: Verify local decrypt binaries exist for matrix target
-        env:
-          CORE_PATH: ${{ matrix.core_path }}
-          SCANNER_PATH: ${{ matrix.scanner_path }}
+        shell: bash
         run: |
-          node -e "const fs=require('fs');const core=process.env.CORE_PATH;const scanner=process.env.SCANNER_PATH;let ok=true;if(!fs.existsSync(core)){console.error('Missing local decrypt core:',core);ok=false}else{console.log('Found local decrypt core:',core)}if(!fs.existsSync(scanner)){console.error('Missing local decrypt scanner:',scanner);ok=false}else{console.log('Found local decrypt scanner:',scanner)}if(!ok)process.exit(1)"
+          set -euo pipefail
+          if [ "${{ matrix.platform }}" = "mac" ]; then
+            node - <<'NODE'
+            const fs = require('fs');
+            const targets = [
+              'resources/bin/darwin-x64/wechat-decrypt-core',
+              'resources/bin/darwin-x64/find_all_keys_macos',
+              'resources/bin/darwin-arm64/wechat-decrypt-core',
+              'resources/bin/darwin-arm64/find_all_keys_macos'
+            ];
+            let ok = true;
+            for (const p of targets) {
+              if (!fs.existsSync(p)) {
+                console.error('Missing local decrypt binary:', p);
+                ok = false;
+              } else {
+                console.log('Found local decrypt binary:', p);
+              }
+            }
+            if (!ok) process.exit(1);
+            NODE
+          else
+            node -e "const fs=require('fs');const core='${{ matrix.core_path }}';const scanner='${{ matrix.scanner_path }}';let ok=true;if(!fs.existsSync(core)){console.error('Missing local decrypt core:',core);ok=false}else{console.log('Found local decrypt core:',core)}if(!fs.existsSync(scanner)){console.error('Missing local decrypt scanner:',scanner);ok=false}else{console.log('Found local decrypt scanner:',scanner)}if(!ok)process.exit(1)"
+          fi
 
       - name: Resolve build script from package.json
         id: resolve_build_script
@@ -389,30 +407,130 @@ jobs:
           # APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
+      - name: Verify better-sqlite3 binary arch (macOS)
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          X64_BIN="release/mac/Rethink AI.app/Contents/Resources/app.asar.unpacked/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
+          ARM64_BIN="release/mac-arm64/Rethink AI.app/Contents/Resources/app.asar.unpacked/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
+
+          [ -f "$X64_BIN" ] || { echo "Missing x64 better_sqlite3.node"; exit 1; }
+          [ -f "$ARM64_BIN" ] || { echo "Missing arm64 better_sqlite3.node"; exit 1; }
+
+          x64_archs="$(lipo -archs "$X64_BIN")"
+          arm64_archs="$(lipo -archs "$ARM64_BIN")"
+
+          echo "$X64_BIN -> $x64_archs"
+          echo "$ARM64_BIN -> $arm64_archs"
+
+          echo "$x64_archs" | grep -Eq 'x86_64h?|x86_64' || { echo "x64 app contains wrong sqlite binary arch"; exit 1; }
+          echo "$arm64_archs" | grep -Eq 'arm64' || { echo "arm64 app contains wrong sqlite binary arch"; exit 1; }
+
       - name: Build/release Electron app (Windows)
         if: matrix.platform == 'win'
         run: npm run ${{ steps.resolve_build_script.outputs.script }}
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
 
-      - name: Delete existing release assets
-        if: github.event_name == 'schedule' && matrix.platform == 'mac' && matrix.arch == 'arm64'
+      - name: Upload release artifacts from matrix job
+        if: needs.prepare_release.outputs.should_release == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}-${{ matrix.arch }}
+          path: release/*
+          if-no-files-found: error
+
+  publish_release:
+    needs:
+      - prepare_release
+      - build
+    runs-on: ubuntu-latest
+    if: needs.prepare_release.outputs.should_release == 'true'
+    env:
+      RELEASE_TAG: ${{ needs.prepare_release.outputs.release_tag }}
+      IS_NIGHTLY: ${{ needs.prepare_release.outputs.is_nightly }}
+      ALI_BUCKET_NAME: rethinkai
+      ALI_REGION: cn-shanghai
+      ALI_ENDPOINT: s3.oss-cn-shanghai.aliyuncs.com
+      ALI_ADDRESSING_STYLE: virtual
+      ALI_ACCESS_KEY: ${{ secrets.ALI_ACCESS_KEY || secrets.AWS_ACCESS_KEY_ID }}
+      ALI_SECRET_KEY: ${{ secrets.ALI_SECRET_KEY || secrets.AWS_SECRET_ACCESS_KEY }}
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release
+
+      - name: Validate release artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -la release
+
+          # latest-mac.yml must exist and include both arm64 + x64 references.
+          if [ ! -f "release/latest-mac.yml" ]; then
+            echo "Missing release/latest-mac.yml"
+            exit 1
+          fi
+
+          grep -Eiq 'arm64|aarch64' release/latest-mac.yml || {
+            echo "latest-mac.yml does not contain arm64 artifact reference"
+            cat release/latest-mac.yml
+            exit 1
+          }
+          grep -Eiq 'x64|x86_64|amd64' release/latest-mac.yml || {
+            echo "latest-mac.yml does not contain x64 artifact reference"
+            cat release/latest-mac.yml
+            exit 1
+          }
+
+          # Ensure latest-mac.yml references actual mac zip artifacts.
+          grep -Eo '[^[:space:]]+arm64[^[:space:]]+\.zip' release/latest-mac.yml | while read -r f; do
+            b="$(basename "$f")"
+            [ -f "release/$b" ] || { echo "latest-mac.yml arm64 zip missing: $b"; exit 1; }
+          done
+          grep -Eo '[^[:space:]]+x64[^[:space:]]+\.zip' release/latest-mac.yml | while read -r f; do
+            b="$(basename "$f")"
+            [ -f "release/$b" ] || { echo "latest-mac.yml x64 zip missing: $b"; exit 1; }
+          done
+
+          # Validate latest*.yml references match files in release/.
+          shopt -s nullglob
+          latest_yaml_files=(release/latest*.yml)
+          for yml in "${latest_yaml_files[@]}"; do
+            [ -f "${yml}" ] || continue
+            while IFS= read -r ref; do
+              [ -n "${ref}" ] || continue
+              if [[ "${ref}" =~ ^https?:// ]]; then
+                continue
+              fi
+              ref_base="$(basename "${ref}")"
+              if [ ! -f "release/${ref_base}" ]; then
+                echo "Update metadata mismatch: ${yml} references missing file '${ref_base}'"
+                exit 1
+              fi
+            done < <(sed -nE "s/^[[:space:]-]*(path|url):[[:space:]]*\"?([^\"#]+)\"?.*/\2/p" "${yml}")
+          done
+
+      - name: Delete existing nightly release assets
+        if: github.event_name == 'schedule' && env.IS_NIGHTLY == 'true'
         shell: bash
         run: |
           set -euo pipefail
 
-          # Get release ID for nightly tag
           RELEASE_ID=$(curl -s -H "Authorization: token ${{ secrets.PRIVATE_REPO_PAT }}" \
             "https://api.github.com/repos/${{ github.repository }}/releases/tags/nightly" | jq -r '.id')
-          
+
           if [ "$RELEASE_ID" != "null" ] && [ "$RELEASE_ID" != "" ]; then
             echo "Found nightly release: $RELEASE_ID"
-            # Get all asset IDs for this release; normalize line endings for cross-platform shells.
             curl -s -H "Authorization: token ${{ secrets.PRIVATE_REPO_PAT }}" \
               "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets" \
               | jq -r '.[].id' | tr -d '\r' > /tmp/nightly_asset_ids.txt
 
-            # Delete each asset and tolerate already-deleted assets.
             while IFS= read -r ASSET_ID; do
               [ -n "${ASSET_ID}" ] || continue
               echo "Deleting asset: $ASSET_ID"
@@ -425,18 +543,12 @@ jobs:
                 exit 1
               fi
             done < /tmp/nightly_asset_ids.txt
-
-            if [ ! -s /tmp/nightly_asset_ids.txt ]; then
-              echo "Nightly release has no assets to delete."
-            fi
-            echo "All existing assets deleted"
           else
             echo "No existing nightly release found, skipping cleanup"
           fi
 
       - name: Release
         uses: softprops/action-gh-release@v2
-        if: needs.prepare_release.outputs.should_release == 'true'
         with:
           token: ${{ secrets.PRIVATE_REPO_PAT }}
           tag_name: ${{ needs.prepare_release.outputs.release_tag }}
@@ -459,17 +571,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
 
       - name: Upload artifacts to Alibaba OSS (S3)
-        if: needs.prepare_release.outputs.should_release == 'true'
         shell: bash
-        env:
-          ALI_BUCKET_NAME: rethinkai
-          ALI_REGION: cn-shanghai
-          ALI_ENDPOINT: s3.oss-cn-shanghai.aliyuncs.com
-          ALI_ADDRESSING_STYLE: virtual
-          RELEASE_TAG: ${{ needs.prepare_release.outputs.release_tag }}
-          IS_NIGHTLY: ${{ needs.prepare_release.outputs.is_nightly }}
-          ALI_ACCESS_KEY: ${{ secrets.ALI_ACCESS_KEY || secrets.AWS_ACCESS_KEY_ID }}
-          ALI_SECRET_KEY: ${{ secrets.ALI_SECRET_KEY || secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
 
@@ -506,25 +608,6 @@ jobs:
             exit 0
           fi
 
-          # Validate latest*.yml references match files in release/ before upload.
-          latest_yaml_files=(release/latest*.yml)
-          if [ "${#latest_yaml_files[@]}" -gt 0 ]; then
-            for yml in "${latest_yaml_files[@]}"; do
-              [ -f "${yml}" ] || continue
-              while IFS= read -r ref; do
-                [ -n "${ref}" ] || continue
-                if [[ "${ref}" =~ ^https?:// ]]; then
-                  continue
-                fi
-                ref_base="$(basename "${ref}")"
-                if [ ! -f "release/${ref_base}" ]; then
-                  echo "Update metadata mismatch: ${yml} references missing file '${ref_base}'"
-                  exit 1
-                fi
-              done < <(sed -nE "s/^[[:space:]-]*(path|url):[[:space:]]*\"?([^\"#]+)\"?.*/\2/p" "${yml}")
-            done
-          fi
-
           for file in "${files[@]}"; do
             [ -f "${file}" ] || continue
             base="$(basename "${file}")"
@@ -544,7 +627,6 @@ jobs:
             echo "Uploaded ${file} -> s3://${ALI_BUCKET_NAME}/${base}"
           done
 
-          # Keep a versioned snapshot for all release tags as backup/rollback source.
           version_prefix="versions/${RELEASE_TAG}/"
           for file in "${files[@]}"; do
             [ -f "${file}" ] || continue
@@ -558,7 +640,7 @@ jobs:
   update_release_manifest:
     needs:
       - prepare_release
-      - build
+      - publish_release
     runs-on: ubuntu-latest
     if: needs.prepare_release.outputs.should_release == 'true'
     env:
