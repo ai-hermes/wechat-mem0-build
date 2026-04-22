@@ -341,9 +341,45 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ matrix.platform }}" = "mac" ]; then
-            node -e "const fs=require('fs');const targets=['resources/bin/darwin-x64/wechat-decrypt-core','resources/bin/darwin-x64/find_all_keys_macos','resources/bin/darwin-arm64/wechat-decrypt-core','resources/bin/darwin-arm64/find_all_keys_macos'];let ok=true;for(const p of targets){if(!fs.existsSync(p)){console.error('Missing local decrypt binary:',p);ok=false}else{console.log('Found local decrypt binary:',p)}}if(!ok)process.exit(1)"
+            node - <<'NODE'
+          const fs = require('fs');
+          const targets = [
+            'resources/bin/darwin-x64/wechat-decrypt-core',
+            'resources/bin/darwin-x64/find_all_keys_macos',
+            'resources/bin/darwin-arm64/wechat-decrypt-core',
+            'resources/bin/darwin-arm64/find_all_keys_macos'
+          ];
+          let ok = true;
+          for (const p of targets) {
+            if (!fs.existsSync(p)) {
+              console.error('Missing local decrypt binary:', p);
+              ok = false;
+            } else {
+              console.log('Found local decrypt binary:', p);
+            }
+          }
+          if (!ok) process.exit(1);
+          NODE
           else
-            node -e "const fs=require('fs');const core='${{ matrix.core_path }}';const scanner='${{ matrix.scanner_path }}';let ok=true;if(!fs.existsSync(core)){console.error('Missing local decrypt core:',core);ok=false}else{console.log('Found local decrypt core:',core)}if(!fs.existsSync(scanner)){console.error('Missing local decrypt scanner:',scanner);ok=false}else{console.log('Found local decrypt scanner:',scanner)}if(!ok)process.exit(1)"
+            node - <<'NODE'
+          const fs = require('fs');
+          const core = '${{ matrix.core_path }}';
+          const scanner = '${{ matrix.scanner_path }}';
+          let ok = true;
+          if (!fs.existsSync(core)) {
+            console.error('Missing local decrypt core:', core);
+            ok = false;
+          } else {
+            console.log('Found local decrypt core:', core);
+          }
+          if (!fs.existsSync(scanner)) {
+            console.error('Missing local decrypt scanner:', scanner);
+            ok = false;
+          } else {
+            console.log('Found local decrypt scanner:', scanner);
+          }
+          if (!ok) process.exit(1);
+          NODE
           fi
 
       - name: Resolve build script from package.json
@@ -385,13 +421,6 @@ jobs:
         run: npm run ${{ steps.resolve_build_script.outputs.script }}
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
-          # For macOS code signing (optional)
-          # CSC_LINK: ${{ secrets.MAC_CERTS }}
-          # CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTS_PASSWORD }}
-          # For macOS notarization (optional)
-          # APPLE_ID: ${{ secrets.APPLE_ID }}
-          # APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - name: Verify better-sqlite3 arch coverage (macOS)
         if: matrix.platform == 'mac'
@@ -427,26 +456,43 @@ jobs:
           fi
 
           # Fallback: when native file isn't found in release tree, verify updater metadata for target arch.
+          # Support prerelease channels (alpha, beta, etc.)
           if [ "${TARGET_ARCH}" = "arm64" ]; then
-            [ -f "release/latest-mac-arm64.yml" ] || [ -f "release/latest-mac.yml" ] || {
-              echo "Unable to confirm arm64 build: missing latest-mac-arm64.yml/latest-mac.yml"
+            mac_arm64_yml=""
+            for candidate in release/latest-mac-arm64.yml release/alpha-mac-arm64.yml release/beta-mac-arm64.yml; do
+              [ -f "$candidate" ] && mac_arm64_yml="$candidate" && break
+            done
+
+            mac_yml=""
+            for candidate in release/latest-mac.yml release/alpha-mac.yml release/beta-mac.yml; do
+              [ -f "$candidate" ] && mac_yml="$candidate" && break
+            done
+
+            [ -n "$mac_arm64_yml" ] || [ -n "$mac_yml" ] || {
+              echo "Unable to confirm arm64 build: missing mac update metadata"
               exit 1
             }
-            if [ -f "release/latest-mac-arm64.yml" ]; then
-              grep -Eiq 'arm64|aarch64' release/latest-mac-arm64.yml || {
-                echo "latest-mac-arm64.yml does not contain arm64 artifact reference"
-                cat release/latest-mac-arm64.yml
+
+            if [ -n "$mac_arm64_yml" ]; then
+              grep -Eiq 'arm64|aarch64' "$mac_arm64_yml" || {
+                echo "$mac_arm64_yml does not contain arm64 artifact reference"
+                cat "$mac_arm64_yml"
                 exit 1
               }
             fi
           else
-            [ -f "release/latest-mac.yml" ] || {
-              echo "Unable to confirm x64 build: missing latest-mac.yml"
+            mac_yml=""
+            for candidate in release/latest-mac.yml release/alpha-mac.yml release/beta-mac.yml; do
+              [ -f "$candidate" ] && mac_yml="$candidate" && break
+            done
+
+            [ -n "$mac_yml" ] || {
+              echo "Unable to confirm x64 build: missing mac update metadata"
               exit 1
             }
-            grep -Eiq 'x64|x86_64|amd64' release/latest-mac.yml || {
-              echo "latest-mac.yml does not contain x64 artifact reference"
-              cat release/latest-mac.yml
+            grep -Eiq 'x64|x86_64|amd64' "$mac_yml" || {
+              echo "$mac_yml does not contain x64 artifact reference"
+              cat "$mac_yml"
               exit 1
             }
           fi
@@ -499,60 +545,83 @@ jobs:
           # mac update metadata:
           # - split arch build: latest-mac.yml (x64) + latest-mac-arm64.yml (arm64)
           # - universal build: latest-mac.yml includes both arch references
-          if [ ! -f "release/latest-mac.yml" ]; then
-            echo "Missing release/latest-mac.yml"
+          # - prerelease: alpha-mac.yml, beta-mac.yml, etc.
+
+          # Find mac update metadata file (latest-mac.yml or channel-specific like alpha-mac.yml)
+          mac_yml=""
+          if [ -f "release/latest-mac.yml" ]; then
+            mac_yml="release/latest-mac.yml"
+          elif [ -f "release/alpha-mac.yml" ]; then
+            mac_yml="release/alpha-mac.yml"
+          elif [ -f "release/beta-mac.yml" ]; then
+            mac_yml="release/beta-mac.yml"
+          else
+            echo "Missing mac update metadata file (latest-mac.yml, alpha-mac.yml, or beta-mac.yml)"
             exit 1
           fi
+          echo "Found mac update metadata: $mac_yml"
 
+          # Find arm64-specific metadata file
+          mac_arm64_yml=""
           if [ -f "release/latest-mac-arm64.yml" ]; then
-            grep -Eiq 'x64|x86_64|amd64' release/latest-mac.yml || {
-              echo "latest-mac.yml does not contain x64 artifact reference"
-              cat release/latest-mac.yml
+            mac_arm64_yml="release/latest-mac-arm64.yml"
+          elif [ -f "release/alpha-mac-arm64.yml" ]; then
+            mac_arm64_yml="release/alpha-mac-arm64.yml"
+          elif [ -f "release/beta-mac-arm64.yml" ]; then
+            mac_arm64_yml="release/beta-mac-arm64.yml"
+          fi
+
+          if [ -n "$mac_arm64_yml" ]; then
+            echo "Found arm64-specific metadata: $mac_arm64_yml"
+            grep -Eiq 'x64|x86_64|amd64' "$mac_yml" || {
+              echo "$mac_yml does not contain x64 artifact reference"
+              cat "$mac_yml"
               exit 1
             }
-            grep -Eiq 'arm64|aarch64' release/latest-mac-arm64.yml || {
-              echo "latest-mac-arm64.yml does not contain arm64 artifact reference"
-              cat release/latest-mac-arm64.yml
+            grep -Eiq 'arm64|aarch64' "$mac_arm64_yml" || {
+              echo "$mac_arm64_yml does not contain arm64 artifact reference"
+              cat "$mac_arm64_yml"
               exit 1
             }
           else
-            grep -Eiq 'arm64|aarch64' release/latest-mac.yml || {
-              echo "latest-mac.yml does not contain arm64 artifact reference (or latest-mac-arm64.yml is missing)"
-              cat release/latest-mac.yml
+            echo "No arm64-specific metadata found, expecting universal build in $mac_yml"
+            grep -Eiq 'arm64|aarch64' "$mac_yml" || {
+              echo "$mac_yml does not contain arm64 artifact reference"
+              cat "$mac_yml"
               exit 1
             }
-            grep -Eiq 'x64|x86_64|amd64' release/latest-mac.yml || {
-              echo "latest-mac.yml does not contain x64 artifact reference"
-              cat release/latest-mac.yml
+            grep -Eiq 'x64|x86_64|amd64' "$mac_yml" || {
+              echo "$mac_yml does not contain x64 artifact reference"
+              cat "$mac_yml"
               exit 1
             }
           fi
 
           # Ensure mac update metadata references actual zip artifacts.
-          if [ -f "release/latest-mac-arm64.yml" ]; then
-            grep -Eo '[^[:space:]]+x64[^[:space:]]+\.zip' release/latest-mac.yml | while read -r f; do
+          if [ -n "$mac_arm64_yml" ]; then
+            grep -Eo '[^[:space:]]+x64[^[:space:]]+\.zip' "$mac_yml" | while read -r f; do
               b="$(basename "$f")"
-              [ -f "release/$b" ] || { echo "latest-mac.yml x64 zip missing: $b"; exit 1; }
+              [ -f "release/$b" ] || { echo "$mac_yml x64 zip missing: $b"; exit 1; }
             done
-            grep -Eo '[^[:space:]]+arm64[^[:space:]]+\.zip' release/latest-mac-arm64.yml | while read -r f; do
+            grep -Eo '[^[:space:]]+arm64[^[:space:]]+\.zip' "$mac_arm64_yml" | while read -r f; do
               b="$(basename "$f")"
-              [ -f "release/$b" ] || { echo "latest-mac-arm64.yml arm64 zip missing: $b"; exit 1; }
+              [ -f "release/$b" ] || { echo "$mac_arm64_yml arm64 zip missing: $b"; exit 1; }
             done
           else
-            grep -Eo '[^[:space:]]+arm64[^[:space:]]+\.zip' release/latest-mac.yml | while read -r f; do
+            grep -Eo '[^[:space:]]+arm64[^[:space:]]+\.zip' "$mac_yml" | while read -r f; do
               b="$(basename "$f")"
-              [ -f "release/$b" ] || { echo "latest-mac.yml arm64 zip missing: $b"; exit 1; }
+              [ -f "release/$b" ] || { echo "$mac_yml arm64 zip missing: $b"; exit 1; }
             done
-            grep -Eo '[^[:space:]]+x64[^[:space:]]+\.zip' release/latest-mac.yml | while read -r f; do
+            grep -Eo '[^[:space:]]+x64[^[:space:]]+\.zip' "$mac_yml" | while read -r f; do
               b="$(basename "$f")"
-              [ -f "release/$b" ] || { echo "latest-mac.yml x64 zip missing: $b"; exit 1; }
+              [ -f "release/$b" ] || { echo "$mac_yml x64 zip missing: $b"; exit 1; }
             done
           fi
 
-          # Validate latest*.yml references match files in release/.
+          # Validate all mac update metadata files (*-mac*.yml) references match files in release/.
           shopt -s nullglob
-          latest_yaml_files=(release/latest*.yml)
-          for yml in "${latest_yaml_files[@]}"; do
+          mac_yaml_files=(release/*-mac*.yml)
+          for yml in "${mac_yaml_files[@]}"; do
             [ -f "${yml}" ] || continue
             while IFS= read -r ref; do
               [ -n "${ref}" ] || continue
@@ -566,6 +635,39 @@ jobs:
               fi
             done < <(sed -nE "s/^[[:space:]-]*(path|url):[[:space:]]*\"?([^\"#]+)\"?.*/\2/p" "${yml}")
           done
+
+      - name: Setup Alibaba OSS (S3) configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ALI_ACCESS_KEY:-}" ] || [ -z "${ALI_SECRET_KEY:-}" ]; then
+            echo "Missing Aliyun OSS credentials. Please provide ALI_ACCESS_KEY/ALI_SECRET_KEY (or fallback AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY)."
+            exit 1
+          fi
+
+          export AWS_ACCESS_KEY_ID="${ALI_ACCESS_KEY}"
+          export AWS_SECRET_ACCESS_KEY="${ALI_SECRET_KEY}"
+          export AWS_DEFAULT_REGION="${ALI_REGION}"
+          export AWS_REQUEST_CHECKSUM_CALCULATION="when_required"
+          export AWS_RESPONSE_CHECKSUM_VALIDATION="when_required"
+
+          mkdir -p "${HOME}/.aws"
+          cat > "${HOME}/.aws/config" <<EOF
+          [default]
+          region = ${ALI_REGION}
+          s3 =
+            addressing_style = ${ALI_ADDRESSING_STYLE}
+            multipart_threshold = 5GB
+          EOF
+
+          # Export for subsequent steps
+          echo "AWS_ACCESS_KEY_ID=${ALI_ACCESS_KEY}" >> "$GITHUB_ENV"
+          echo "AWS_SECRET_ACCESS_KEY=${ALI_SECRET_KEY}" >> "$GITHUB_ENV"
+          echo "AWS_DEFAULT_REGION=${ALI_REGION}" >> "$GITHUB_ENV"
+          echo "AWS_REQUEST_CHECKSUM_CALCULATION=when_required" >> "$GITHUB_ENV"
+          echo "AWS_RESPONSE_CHECKSUM_VALIDATION=when_required" >> "$GITHUB_ENV"
+          echo "ALI_ENDPOINT_URL=https://${ALI_ENDPOINT}" >> "$GITHUB_ENV"
 
       - name: Delete existing nightly release assets
         if: github.event_name == 'schedule' && env.IS_NIGHTLY == 'true'
@@ -626,27 +728,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -z "${ALI_ACCESS_KEY:-}" ] || [ -z "${ALI_SECRET_KEY:-}" ]; then
-            echo "Missing Aliyun OSS credentials. Please provide ALI_ACCESS_KEY/ALI_SECRET_KEY (or fallback AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY)."
-            exit 1
-          fi
-
-          export AWS_ACCESS_KEY_ID="${ALI_ACCESS_KEY}"
-          export AWS_SECRET_ACCESS_KEY="${ALI_SECRET_KEY}"
-          export AWS_DEFAULT_REGION="${ALI_REGION}"
-          export AWS_REQUEST_CHECKSUM_CALCULATION="when_required"
-          export AWS_RESPONSE_CHECKSUM_VALIDATION="when_required"
-          ALI_ENDPOINT_URL="https://${ALI_ENDPOINT}"
-
-          mkdir -p "${HOME}/.aws"
-          cat > "${HOME}/.aws/config" <<EOF
-          [default]
-          region = ${ALI_REGION}
-          s3 =
-            addressing_style = ${ALI_ADDRESSING_STYLE}
-            multipart_threshold = 5GB
-          EOF
-
           if ! command -v aws >/dev/null 2>&1; then
             echo "aws CLI not found on runner."
             exit 1
@@ -705,6 +786,39 @@ jobs:
       ALI_SECRET_KEY: ${{ secrets.ALI_SECRET_KEY || secrets.AWS_SECRET_ACCESS_KEY }}
       GH_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
     steps:
+      - name: Setup Alibaba OSS (S3) configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ALI_ACCESS_KEY:-}" ] || [ -z "${ALI_SECRET_KEY:-}" ]; then
+            echo "Missing Aliyun OSS credentials. Please provide ALI_ACCESS_KEY/ALI_SECRET_KEY (or fallback AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY)."
+            exit 1
+          fi
+
+          export AWS_ACCESS_KEY_ID="${ALI_ACCESS_KEY}"
+          export AWS_SECRET_ACCESS_KEY="${ALI_SECRET_KEY}"
+          export AWS_DEFAULT_REGION="${ALI_REGION}"
+          export AWS_REQUEST_CHECKSUM_CALCULATION="when_required"
+          export AWS_RESPONSE_CHECKSUM_VALIDATION="when_required"
+
+          mkdir -p "${HOME}/.aws"
+          cat > "${HOME}/.aws/config" <<EOF
+          [default]
+          region = ${ALI_REGION}
+          s3 =
+            addressing_style = ${ALI_ADDRESSING_STYLE}
+            multipart_threshold = 5GB
+          EOF
+
+          # Export for subsequent steps
+          echo "AWS_ACCESS_KEY_ID=${ALI_ACCESS_KEY}" >> "$GITHUB_ENV"
+          echo "AWS_SECRET_ACCESS_KEY=${ALI_SECRET_KEY}" >> "$GITHUB_ENV"
+          echo "AWS_DEFAULT_REGION=${ALI_REGION}" >> "$GITHUB_ENV"
+          echo "AWS_REQUEST_CHECKSUM_CALCULATION=when_required" >> "$GITHUB_ENV"
+          echo "AWS_RESPONSE_CHECKSUM_VALIDATION=when_required" >> "$GITHUB_ENV"
+          echo "ALI_ENDPOINT_URL=https://${ALI_ENDPOINT}" >> "$GITHUB_ENV"
+
       - name: Update releases.json on Alibaba OSS (S3)
         shell: bash
         run: |
@@ -721,31 +835,10 @@ jobs:
             exit 0
           fi
 
-          if [ -z "${ALI_ACCESS_KEY:-}" ] || [ -z "${ALI_SECRET_KEY:-}" ]; then
-            echo "Missing Aliyun OSS credentials. Please provide ALI_ACCESS_KEY/ALI_SECRET_KEY (or fallback AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY)."
-            exit 1
-          fi
-
           if [ -z "${GH_PAT:-}" ]; then
             echo "Missing PRIVATE_REPO_PAT for querying release assets."
             exit 1
           fi
-
-          export AWS_ACCESS_KEY_ID="${ALI_ACCESS_KEY}"
-          export AWS_SECRET_ACCESS_KEY="${ALI_SECRET_KEY}"
-          export AWS_DEFAULT_REGION="${ALI_REGION}"
-          export AWS_REQUEST_CHECKSUM_CALCULATION="when_required"
-          export AWS_RESPONSE_CHECKSUM_VALIDATION="when_required"
-          ALI_ENDPOINT_URL="https://${ALI_ENDPOINT}"
-
-          mkdir -p "${HOME}/.aws"
-          cat > "${HOME}/.aws/config" <<EOF
-          [default]
-          region = ${ALI_REGION}
-          s3 =
-            addressing_style = ${ALI_ADDRESSING_STYLE}
-            multipart_threshold = 5GB
-          EOF
 
           if ! command -v aws >/dev/null 2>&1; then
             echo "aws CLI not found on runner."
@@ -837,27 +930,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          if [ -z "${ALI_ACCESS_KEY:-}" ] || [ -z "${ALI_SECRET_KEY:-}" ]; then
-            echo "Missing Aliyun OSS credentials. Please provide ALI_ACCESS_KEY/ALI_SECRET_KEY (or fallback AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY)."
-            exit 1
-          fi
-
-          export AWS_ACCESS_KEY_ID="${ALI_ACCESS_KEY}"
-          export AWS_SECRET_ACCESS_KEY="${ALI_SECRET_KEY}"
-          export AWS_DEFAULT_REGION="${ALI_REGION}"
-          export AWS_REQUEST_CHECKSUM_CALCULATION="when_required"
-          export AWS_RESPONSE_CHECKSUM_VALIDATION="when_required"
-          ALI_ENDPOINT_URL="https://${ALI_ENDPOINT}"
-
-          mkdir -p "${HOME}/.aws"
-          cat > "${HOME}/.aws/config" <<EOF
-          [default]
-          region = ${ALI_REGION}
-          s3 =
-            addressing_style = ${ALI_ADDRESSING_STYLE}
-            multipart_threshold = 5GB
-          EOF
 
           if ! command -v aws >/dev/null 2>&1; then
             echo "aws CLI not found on runner."
