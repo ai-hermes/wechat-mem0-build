@@ -337,25 +337,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ matrix.platform }}" = "mac" ]; then
-            node - <<'NODE'
-            const fs = require('fs');
-            const targets = [
-              'resources/bin/darwin-x64/wechat-decrypt-core',
-              'resources/bin/darwin-x64/find_all_keys_macos',
-              'resources/bin/darwin-arm64/wechat-decrypt-core',
-              'resources/bin/darwin-arm64/find_all_keys_macos'
-            ];
-            let ok = true;
-            for (const p of targets) {
-              if (!fs.existsSync(p)) {
-                console.error('Missing local decrypt binary:', p);
-                ok = false;
-              } else {
-                console.log('Found local decrypt binary:', p);
-              }
-            }
-            if (!ok) process.exit(1);
-            NODE
+            node -e "const fs=require('fs');const targets=['resources/bin/darwin-x64/wechat-decrypt-core','resources/bin/darwin-x64/find_all_keys_macos','resources/bin/darwin-arm64/wechat-decrypt-core','resources/bin/darwin-arm64/find_all_keys_macos'];let ok=true;for(const p of targets){if(!fs.existsSync(p)){console.error('Missing local decrypt binary:',p);ok=false}else{console.log('Found local decrypt binary:',p)}}if(!ok)process.exit(1)"
           else
             node -e "const fs=require('fs');const core='${{ matrix.core_path }}';const scanner='${{ matrix.scanner_path }}';let ok=true;if(!fs.existsSync(core)){console.error('Missing local decrypt core:',core);ok=false}else{console.log('Found local decrypt core:',core)}if(!fs.existsSync(scanner)){console.error('Missing local decrypt scanner:',scanner);ok=false}else{console.log('Found local decrypt scanner:',scanner)}if(!ok)process.exit(1)"
           fi
