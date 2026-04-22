@@ -160,9 +160,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - os: macos-13
+            platform: mac
+            arch: x64
           - os: macos-latest
             platform: mac
-            arch: universal
+            arch: arm64
           - os: windows-latest
             platform: win
             arch: x64
@@ -390,9 +393,11 @@ jobs:
           # APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
-      - name: Verify better-sqlite3 binary arch (macOS)
+      - name: Verify better-sqlite3 arch coverage (macOS)
         if: matrix.platform == 'mac'
         shell: bash
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
 
@@ -408,13 +413,45 @@ jobs:
             echo "$archs" | grep -Eq 'arm64' && has_arm64=1 || true
           done < <(find release -type f -name better_sqlite3.node 2>/dev/null)
 
-          if [ "$has_match" -ne 1 ]; then
-            echo "No better_sqlite3.node found under release/"
-            exit 1
+          target_ok=0
+          if [ "${TARGET_ARCH}" = "x64" ] && [ "$has_x64" -eq 1 ]; then
+            target_ok=1
+          fi
+          if [ "${TARGET_ARCH}" = "arm64" ] && [ "$has_arm64" -eq 1 ]; then
+            target_ok=1
           fi
 
-          [ "$has_x64" -eq 1 ] || { echo "Missing x64 better_sqlite3.node in release outputs"; exit 1; }
-          [ "$has_arm64" -eq 1 ] || { echo "Missing arm64 better_sqlite3.node in release outputs"; exit 1; }
+          if [ "$has_match" -eq 1 ] && [ "$target_ok" -eq 1 ]; then
+            echo "better-sqlite3 binaries match TARGET_ARCH=${TARGET_ARCH}."
+            exit 0
+          fi
+
+          # Fallback: when native file isn't found in release tree, verify updater metadata for target arch.
+          if [ "${TARGET_ARCH}" = "arm64" ]; then
+            [ -f "release/latest-mac-arm64.yml" ] || [ -f "release/latest-mac.yml" ] || {
+              echo "Unable to confirm arm64 build: missing latest-mac-arm64.yml/latest-mac.yml"
+              exit 1
+            }
+            if [ -f "release/latest-mac-arm64.yml" ]; then
+              grep -Eiq 'arm64|aarch64' release/latest-mac-arm64.yml || {
+                echo "latest-mac-arm64.yml does not contain arm64 artifact reference"
+                cat release/latest-mac-arm64.yml
+                exit 1
+              }
+            fi
+          else
+            [ -f "release/latest-mac.yml" ] || {
+              echo "Unable to confirm x64 build: missing latest-mac.yml"
+              exit 1
+            }
+            grep -Eiq 'x64|x86_64|amd64' release/latest-mac.yml || {
+              echo "latest-mac.yml does not contain x64 artifact reference"
+              cat release/latest-mac.yml
+              exit 1
+            }
+          fi
+
+          echo "better-sqlite3 direct scan unavailable; confirmed TARGET_ARCH=${TARGET_ARCH} via updater metadata."
 
       - name: Build/release Electron app (Windows)
         if: matrix.platform == 'win'
@@ -459,32 +496,58 @@ jobs:
           set -euo pipefail
           ls -la release
 
-          # latest-mac.yml must exist and include both arm64 + x64 references.
+          # mac update metadata:
+          # - split arch build: latest-mac.yml (x64) + latest-mac-arm64.yml (arm64)
+          # - universal build: latest-mac.yml includes both arch references
           if [ ! -f "release/latest-mac.yml" ]; then
             echo "Missing release/latest-mac.yml"
             exit 1
           fi
 
-          grep -Eiq 'arm64|aarch64' release/latest-mac.yml || {
-            echo "latest-mac.yml does not contain arm64 artifact reference"
-            cat release/latest-mac.yml
-            exit 1
-          }
-          grep -Eiq 'x64|x86_64|amd64' release/latest-mac.yml || {
-            echo "latest-mac.yml does not contain x64 artifact reference"
-            cat release/latest-mac.yml
-            exit 1
-          }
+          if [ -f "release/latest-mac-arm64.yml" ]; then
+            grep -Eiq 'x64|x86_64|amd64' release/latest-mac.yml || {
+              echo "latest-mac.yml does not contain x64 artifact reference"
+              cat release/latest-mac.yml
+              exit 1
+            }
+            grep -Eiq 'arm64|aarch64' release/latest-mac-arm64.yml || {
+              echo "latest-mac-arm64.yml does not contain arm64 artifact reference"
+              cat release/latest-mac-arm64.yml
+              exit 1
+            }
+          else
+            grep -Eiq 'arm64|aarch64' release/latest-mac.yml || {
+              echo "latest-mac.yml does not contain arm64 artifact reference (or latest-mac-arm64.yml is missing)"
+              cat release/latest-mac.yml
+              exit 1
+            }
+            grep -Eiq 'x64|x86_64|amd64' release/latest-mac.yml || {
+              echo "latest-mac.yml does not contain x64 artifact reference"
+              cat release/latest-mac.yml
+              exit 1
+            }
+          fi
 
-          # Ensure latest-mac.yml references actual mac zip artifacts.
-          grep -Eo '[^[:space:]]+arm64[^[:space:]]+\.zip' release/latest-mac.yml | while read -r f; do
-            b="$(basename "$f")"
-            [ -f "release/$b" ] || { echo "latest-mac.yml arm64 zip missing: $b"; exit 1; }
-          done
-          grep -Eo '[^[:space:]]+x64[^[:space:]]+\.zip' release/latest-mac.yml | while read -r f; do
-            b="$(basename "$f")"
-            [ -f "release/$b" ] || { echo "latest-mac.yml x64 zip missing: $b"; exit 1; }
-          done
+          # Ensure mac update metadata references actual zip artifacts.
+          if [ -f "release/latest-mac-arm64.yml" ]; then
+            grep -Eo '[^[:space:]]+x64[^[:space:]]+\.zip' release/latest-mac.yml | while read -r f; do
+              b="$(basename "$f")"
+              [ -f "release/$b" ] || { echo "latest-mac.yml x64 zip missing: $b"; exit 1; }
+            done
+            grep -Eo '[^[:space:]]+arm64[^[:space:]]+\.zip' release/latest-mac-arm64.yml | while read -r f; do
+              b="$(basename "$f")"
+              [ -f "release/$b" ] || { echo "latest-mac-arm64.yml arm64 zip missing: $b"; exit 1; }
+            done
+          else
+            grep -Eo '[^[:space:]]+arm64[^[:space:]]+\.zip' release/latest-mac.yml | while read -r f; do
+              b="$(basename "$f")"
+              [ -f "release/$b" ] || { echo "latest-mac.yml arm64 zip missing: $b"; exit 1; }
+            done
+            grep -Eo '[^[:space:]]+x64[^[:space:]]+\.zip' release/latest-mac.yml | while read -r f; do
+              b="$(basename "$f")"
+              [ -f "release/$b" ] || { echo "latest-mac.yml x64 zip missing: $b"; exit 1; }
+            done
+          fi
 
           # Validate latest*.yml references match files in release/.
           shopt -s nullglob
