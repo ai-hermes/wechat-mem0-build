@@ -135,6 +135,7 @@ jobs:
           fi
 
   build:
+    name: build (${{ matrix.platform }}, ${{ matrix.arch }})
     needs: prepare_release
     runs-on: ${{ matrix.os }}
 
