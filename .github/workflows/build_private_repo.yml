@@ -409,6 +409,10 @@ jobs:
           const selected = candidates.find((name) => scripts[name]);
           if (!selected) {
             console.error(`No matching build script for platform=${platform}, arch=${arch}. Tried: ${candidates.join(', ')}`);
+            console.error(`\nAvailable scripts: ${Object.keys(scripts).filter(k => k.startsWith('build:')).join(', ')}`);
+            console.error(`\nFor mac builds, you need to add arch-specific scripts to package.json:`);
+            console.error(`  "build:mac:x64": "npm run build && electron-builder --mac --x64 --config"`);
+            console.error(`  "build:mac:arm64": "npm run build && electron-builder --mac --arm64 --config"`);
             process.exit(1);
           }
 
