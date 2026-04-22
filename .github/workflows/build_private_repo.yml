@@ -203,6 +203,8 @@ jobs:
           UPDATE_BASE_URL: ${{ env.AUTO_UPDATE_BASE_URL }}
           UPDATE_GH_OWNER: ${{ github.repository_owner }}
           UPDATE_GH_REPO: ${{ github.event.repository.name }}
+          MATRIX_PLATFORM: ${{ matrix.platform }}
+          MATRIX_ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           npm install --no-save yaml
@@ -214,6 +216,8 @@ jobs:
           const updateBaseUrl = process.env.UPDATE_BASE_URL;
           const updateGhOwner = process.env.UPDATE_GH_OWNER;
           const updateGhRepo = process.env.UPDATE_GH_REPO;
+          const platform = process.env.MATRIX_PLATFORM;
+          const arch = process.env.MATRIX_ARCH;
 
           if (!fs.existsSync(path)) {
             console.error(`Missing ${path} in source repository`);
@@ -230,6 +234,19 @@ jobs:
           // This avoids better-sqlite3 arch mismatch (e.g. arm64 binary inside x64 app).
           config.npmRebuild = true;
           config.buildDependenciesFromSource = false;
+
+          // For mac builds, set target arch explicitly to generate arch-specific update metadata
+          if (platform === 'mac' && arch && config.mac && config.mac.target) {
+            config.mac.target = config.mac.target.map(t => {
+              if (typeof t === 'string') {
+                return { target: t, arch: [arch] };
+              } else if (t.target) {
+                return { ...t, arch: [arch] };
+              }
+              return t;
+            });
+            console.log(`Set mac.target arch to [${arch}] for arch-specific metadata generation`);
+          }
 
           fs.writeFileSync(path, YAML.stringify(config));
           console.log(`Updated ${path}: publish providers + npmRebuild=true`);
