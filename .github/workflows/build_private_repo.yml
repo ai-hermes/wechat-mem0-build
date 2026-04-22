@@ -499,60 +499,83 @@ jobs:
           # mac update metadata:
           # - split arch build: latest-mac.yml (x64) + latest-mac-arm64.yml (arm64)
           # - universal build: latest-mac.yml includes both arch references
-          if [ ! -f "release/latest-mac.yml" ]; then
-            echo "Missing release/latest-mac.yml"
+          # - prerelease: alpha-mac.yml, beta-mac.yml, etc.
+
+          # Find mac update metadata file (latest-mac.yml or channel-specific like alpha-mac.yml)
+          mac_yml=""
+          if [ -f "release/latest-mac.yml" ]; then
+            mac_yml="release/latest-mac.yml"
+          elif [ -f "release/alpha-mac.yml" ]; then
+            mac_yml="release/alpha-mac.yml"
+          elif [ -f "release/beta-mac.yml" ]; then
+            mac_yml="release/beta-mac.yml"
+          else
+            echo "Missing mac update metadata file (latest-mac.yml, alpha-mac.yml, or beta-mac.yml)"
             exit 1
           fi
+          echo "Found mac update metadata: $mac_yml"
 
+          # Find arm64-specific metadata file
+          mac_arm64_yml=""
           if [ -f "release/latest-mac-arm64.yml" ]; then
-            grep -Eiq 'x64|x86_64|amd64' release/latest-mac.yml || {
-              echo "latest-mac.yml does not contain x64 artifact reference"
-              cat release/latest-mac.yml
+            mac_arm64_yml="release/latest-mac-arm64.yml"
+          elif [ -f "release/alpha-mac-arm64.yml" ]; then
+            mac_arm64_yml="release/alpha-mac-arm64.yml"
+          elif [ -f "release/beta-mac-arm64.yml" ]; then
+            mac_arm64_yml="release/beta-mac-arm64.yml"
+          fi
+
+          if [ -n "$mac_arm64_yml" ]; then
+            echo "Found arm64-specific metadata: $mac_arm64_yml"
+            grep -Eiq 'x64|x86_64|amd64' "$mac_yml" || {
+              echo "$mac_yml does not contain x64 artifact reference"
+              cat "$mac_yml"
               exit 1
             }
-            grep -Eiq 'arm64|aarch64' release/latest-mac-arm64.yml || {
-              echo "latest-mac-arm64.yml does not contain arm64 artifact reference"
-              cat release/latest-mac-arm64.yml
+            grep -Eiq 'arm64|aarch64' "$mac_arm64_yml" || {
+              echo "$mac_arm64_yml does not contain arm64 artifact reference"
+              cat "$mac_arm64_yml"
               exit 1
             }
           else
-            grep -Eiq 'arm64|aarch64' release/latest-mac.yml || {
-              echo "latest-mac.yml does not contain arm64 artifact reference (or latest-mac-arm64.yml is missing)"
-              cat release/latest-mac.yml
+            echo "No arm64-specific metadata found, expecting universal build in $mac_yml"
+            grep -Eiq 'arm64|aarch64' "$mac_yml" || {
+              echo "$mac_yml does not contain arm64 artifact reference"
+              cat "$mac_yml"
               exit 1
             }
-            grep -Eiq 'x64|x86_64|amd64' release/latest-mac.yml || {
-              echo "latest-mac.yml does not contain x64 artifact reference"
-              cat release/latest-mac.yml
+            grep -Eiq 'x64|x86_64|amd64' "$mac_yml" || {
+              echo "$mac_yml does not contain x64 artifact reference"
+              cat "$mac_yml"
               exit 1
             }
           fi
 
           # Ensure mac update metadata references actual zip artifacts.
-          if [ -f "release/latest-mac-arm64.yml" ]; then
-            grep -Eo '[^[:space:]]+x64[^[:space:]]+\.zip' release/latest-mac.yml | while read -r f; do
+          if [ -n "$mac_arm64_yml" ]; then
+            grep -Eo '[^[:space:]]+x64[^[:space:]]+\.zip' "$mac_yml" | while read -r f; do
               b="$(basename "$f")"
-              [ -f "release/$b" ] || { echo "latest-mac.yml x64 zip missing: $b"; exit 1; }
+              [ -f "release/$b" ] || { echo "$mac_yml x64 zip missing: $b"; exit 1; }
             done
-            grep -Eo '[^[:space:]]+arm64[^[:space:]]+\.zip' release/latest-mac-arm64.yml | while read -r f; do
+            grep -Eo '[^[:space:]]+arm64[^[:space:]]+\.zip' "$mac_arm64_yml" | while read -r f; do
               b="$(basename "$f")"
-              [ -f "release/$b" ] || { echo "latest-mac-arm64.yml arm64 zip missing: $b"; exit 1; }
+              [ -f "release/$b" ] || { echo "$mac_arm64_yml arm64 zip missing: $b"; exit 1; }
             done
           else
-            grep -Eo '[^[:space:]]+arm64[^[:space:]]+\.zip' release/latest-mac.yml | while read -r f; do
+            grep -Eo '[^[:space:]]+arm64[^[:space:]]+\.zip' "$mac_yml" | while read -r f; do
               b="$(basename "$f")"
-              [ -f "release/$b" ] || { echo "latest-mac.yml arm64 zip missing: $b"; exit 1; }
+              [ -f "release/$b" ] || { echo "$mac_yml arm64 zip missing: $b"; exit 1; }
             done
-            grep -Eo '[^[:space:]]+x64[^[:space:]]+\.zip' release/latest-mac.yml | while read -r f; do
+            grep -Eo '[^[:space:]]+x64[^[:space:]]+\.zip' "$mac_yml" | while read -r f; do
               b="$(basename "$f")"
-              [ -f "release/$b" ] || { echo "latest-mac.yml x64 zip missing: $b"; exit 1; }
+              [ -f "release/$b" ] || { echo "$mac_yml x64 zip missing: $b"; exit 1; }
             done
           fi
 
-          # Validate latest*.yml references match files in release/.
+          # Validate all mac update metadata files (*-mac*.yml) references match files in release/.
           shopt -s nullglob
-          latest_yaml_files=(release/latest*.yml)
-          for yml in "${latest_yaml_files[@]}"; do
+          mac_yaml_files=(release/*-mac*.yml)
+          for yml in "${mac_yaml_files[@]}"; do
             [ -f "${yml}" ] || continue
             while IFS= read -r ref; do
               [ -n "${ref}" ] || continue
