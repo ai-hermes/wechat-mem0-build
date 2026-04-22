@@ -235,17 +235,20 @@ jobs:
           config.npmRebuild = true;
           config.buildDependenciesFromSource = false;
 
-          // For mac builds, set target arch explicitly to generate arch-specific update metadata
-          if (platform === 'mac' && arch && config.mac && config.mac.target) {
+          // For mac builds, ensure target declares both archs for proper metadata naming
+          // electron-builder generates arch-specific metadata (alpha-mac-arm64.yml) only when
+          // multiple archs are declared in config, even if CLI flag limits actual build to one arch
+          if (platform === 'mac' && config.mac && config.mac.target) {
             config.mac.target = config.mac.target.map(t => {
               if (typeof t === 'string') {
-                return { target: t, arch: [arch] };
+                return { target: t, arch: ['x64', 'arm64'] };
               } else if (t.target) {
-                return { ...t, arch: [arch] };
+                return { ...t, arch: ['x64', 'arm64'] };
               }
               return t;
             });
-            console.log(`Set mac.target arch to [${arch}] for arch-specific metadata generation`);
+            console.log(`Set mac.target arch to ['x64', 'arm64'] for arch-specific metadata generation`);
+            console.log(`Actual build arch will be limited by CLI flag: --${arch}`);
           }
 
           fs.writeFileSync(path, YAML.stringify(config));
