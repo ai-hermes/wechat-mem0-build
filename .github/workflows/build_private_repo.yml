@@ -596,42 +596,74 @@ jobs:
           done
 
           # Assemble mac metadata with electron-updater expected naming:
-          # electron-updater on macOS uses the same channel file (latest-mac.yml) for both architectures.
-          # It automatically selects the correct file from the 'files' list based on process.arch.
-          # Solution: Merge both x64 and arm64 files into a single latest-mac.yml
+          # keep one *-mac.yml per channel (latest/alpha/beta), and merge x64 + arm64 entries.
+          # The merged files list is deduplicated by URL/path to avoid duplicate artifacts.
           for channel in latest alpha beta; do
             x64_src="artifacts/release-mac-x64/${channel}-mac-x64.yml"
             arm64_src="artifacts/release-mac-arm64/${channel}-mac-arm64.yml"
 
             if [ -f "$x64_src" ] && [ -f "$arm64_src" ]; then
-              # Merge both architectures into a single yml file using pure bash
-              # Extract version and releaseDate from x64 file
-              version=$(grep '^version:' "$x64_src" | head -1)
-              x64_date=$(grep '^releaseDate:' "$x64_src" | head -1 | cut -d"'" -f2)
-              arm64_date=$(grep '^releaseDate:' "$arm64_src" | head -1 | cut -d"'" -f2)
+              version="$(grep '^version:' "$x64_src" | head -1 || true)"
+              [ -n "$version" ] || version="$(grep '^version:' "$arm64_src" | head -1 || true)"
 
-              # Use the latest releaseDate
-              if [[ "$arm64_date" > "$x64_date" ]]; then
+              x64_date="$(grep '^releaseDate:' "$x64_src" | head -1 | sed -E "s/^releaseDate:[[:space:]]*'?([^']+)'?/\1/" || true)"
+              arm64_date="$(grep '^releaseDate:' "$arm64_src" | head -1 | sed -E "s/^releaseDate:[[:space:]]*'?([^']+)'?/\1/" || true)"
+
+              if [ -n "$x64_date" ] && [ -n "$arm64_date" ]; then
+                if [[ "$arm64_date" > "$x64_date" ]]; then
+                  release_date="releaseDate: '$arm64_date'"
+                else
+                  release_date="releaseDate: '$x64_date'"
+                fi
+              elif [ -n "$x64_date" ]; then
+                release_date="releaseDate: '$x64_date'"
+              elif [ -n "$arm64_date" ]; then
                 release_date="releaseDate: '$arm64_date'"
               else
-                release_date="releaseDate: '$x64_date'"
+                release_date=""
               fi
 
-              # Create merged yml file
               {
                 echo "$version"
                 echo "files:"
-                # Extract files section from x64 (skip first 2 lines: version and files:)
-                sed -n '/^files:/,/^[a-z]/p' "$x64_src" | sed '1d;$d'
-                # Extract files section from arm64 (skip first 2 lines: version and files:)
-                sed -n '/^files:/,/^[a-z]/p' "$arm64_src" | sed '1d;$d'
-                # Add path and sha512 from x64 (primary)
-                grep '^path:' "$x64_src"
-                grep '^sha512:' "$x64_src"
-                echo "$release_date"
+                awk '
+                  function flush_entry() {
+                    if (!in_entry) return
+                    if (!(entry_key in seen)) {
+                      printf "%s", entry_buf
+                      seen[entry_key] = 1
+                    }
+                    in_entry = 0
+                    entry_key = ""
+                    entry_buf = ""
+                  }
+                  /^files:/ { in_files = 1; next }
+                  in_files && /^[^[:space:]]/ { in_files = 0; flush_entry() }
+                  !in_files { next }
+                  /^[[:space:]]*-[[:space:]]*(url|path):/ {
+                    flush_entry()
+                    in_entry = 1
+                    entry_buf = $0 ORS
+                    entry_key = $0
+                    sub(/^[[:space:]]*-[[:space:]]*(url|path):[[:space:]]*/, "", entry_key)
+                    gsub(/["'\'' ]/, "", entry_key)
+                    next
+                  }
+                  in_entry {
+                    entry_buf = entry_buf $0 ORS
+                  }
+                  END { flush_entry() }
+                ' "$x64_src" "$arm64_src"
+                path_line="$(grep '^path:' "$x64_src" | head -1 || true)"
+                [ -n "$path_line" ] || path_line="$(grep '^path:' "$arm64_src" | head -1 || true)"
+                [ -n "$path_line" ] && echo "$path_line"
+                sha_line="$(grep '^sha512:' "$x64_src" | head -1 || true)"
+                [ -n "$sha_line" ] || sha_line="$(grep '^sha512:' "$arm64_src" | head -1 || true)"
+                [ -n "$sha_line" ] && echo "$sha_line"
+                [ -n "$release_date" ] && echo "$release_date"
               } > "release/${channel}-mac.yml"
 
-              echo "✓ Universal metadata: ${channel}-mac.yml (x64 + arm64)"
+              echo "✓ Merged metadata: ${channel}-mac.yml (x64 + arm64, deduplicated)"
             elif [ -f "$x64_src" ]; then
               cp "$x64_src" "release/${channel}-mac.yml"
               echo "✓ x64 metadata: ${channel}-mac.yml"
@@ -640,17 +672,6 @@ jobs:
               echo "✓ arm64 metadata: ${channel}-mac.yml"
             fi
           done
-
-          # TEMPORARY: Create channel-specific metadata files as copies of latest-mac-arm64.yml
-          # to allow old clients (without channel='latest' fix) to update to new versions.
-          # These can be removed once all users have updated to versions with the fix.
-          if [ -f "release/latest-mac-arm64.yml" ]; then
-            cp "release/latest-mac-arm64.yml" "release/alpha-mac.yml"
-            cp "release/latest-mac-arm64.yml" "release/beta-mac.yml"
-            echo "✓ Created temporary channel-specific metadata for backward compatibility"
-            echo "  - alpha-mac.yml (copy of latest-mac-arm64.yml)"
-            echo "  - beta-mac.yml (copy of latest-mac-arm64.yml)"
-          fi
 
           echo "Final release directory:"
           ls -la release
@@ -664,62 +685,21 @@ jobs:
           ls -la release
           echo ""
 
-          # mac update metadata:
-          # - split arch build: latest-mac.yml (x64) + latest-mac-arm64.yml (arm64)
-          # - universal build: latest-mac.yml includes both arch references
-          # - prerelease: alpha-mac.yml, beta-mac.yml, etc.
+          shopt -s nullglob
+          mac_channel_ymls=(release/latest-mac.yml release/alpha-mac.yml release/beta-mac.yml)
+          existing_mac_channel_ymls=()
+          for yml in "${mac_channel_ymls[@]}"; do
+            [ -f "$yml" ] && existing_mac_channel_ymls+=("$yml")
+          done
 
-          # Find mac update metadata file (latest-mac.yml or channel-specific like alpha-mac.yml)
-          mac_yml=""
-          if [ -f "release/latest-mac.yml" ]; then
-            mac_yml="release/latest-mac.yml"
-          elif [ -f "release/alpha-mac.yml" ]; then
-            mac_yml="release/alpha-mac.yml"
-          elif [ -f "release/beta-mac.yml" ]; then
-            mac_yml="release/beta-mac.yml"
-          else
-            echo "❌ Missing mac update metadata file (latest-mac.yml, alpha-mac.yml, or beta-mac.yml)"
+          if [ "${#existing_mac_channel_ymls[@]}" -eq 0 ]; then
+            echo "❌ Missing mac update metadata file (latest-mac.yml / alpha-mac.yml / beta-mac.yml)"
             exit 1
           fi
-          echo "✓ Found mac update metadata: $mac_yml"
 
-          # Find arm64-specific metadata file
-          mac_arm64_yml=""
-          if [ -f "release/latest-mac-arm64.yml" ]; then
-            mac_arm64_yml="release/latest-mac-arm64.yml"
-          elif [ -f "release/alpha-mac-arm64.yml" ]; then
-            mac_arm64_yml="release/alpha-mac-arm64.yml"
-          elif [ -f "release/beta-mac-arm64.yml" ]; then
-            mac_arm64_yml="release/beta-mac-arm64.yml"
-          fi
-
-          if [ -n "$mac_arm64_yml" ]; then
-            echo "✓ Found arm64-specific metadata: $mac_arm64_yml"
-            echo ""
-
-            echo "=== Validating x64 metadata content ==="
-            if grep -Eiq 'x64|x86_64|amd64' "$mac_yml"; then
-              echo "✓ $mac_yml contains x64 artifact references"
-            else
-              echo "❌ $mac_yml does not contain x64 artifact reference"
-              echo "File contents:"
-              cat "$mac_yml"
-              exit 1
-            fi
-
-            echo ""
-            echo "=== Validating arm64 metadata content ==="
-            if grep -Eiq 'arm64|aarch64' "$mac_arm64_yml"; then
-              echo "✓ $mac_arm64_yml contains arm64 artifact references"
-            else
-              echo "❌ $mac_arm64_yml does not contain arm64 artifact reference"
-              echo "File contents:"
-              cat "$mac_arm64_yml"
-              exit 1
-            fi
-          else
-            echo "⚠ No arm64-specific metadata found, expecting universal build in $mac_yml"
-            echo ""
+          echo "=== Validating merged mac metadata ==="
+          for mac_yml in "${existing_mac_channel_ymls[@]}"; do
+            echo "Checking $(basename "$mac_yml")..."
 
             if ! grep -Eiq 'arm64|aarch64' "$mac_yml"; then
               echo "❌ $mac_yml does not contain arm64 artifact reference"
@@ -733,68 +713,39 @@ jobs:
               exit 1
             fi
 
-            echo "✓ Universal build metadata contains both x64 and arm64 references"
-          fi
-
-          echo ""
-          echo "=== Validating zip artifact references ==="
-
-          # Ensure mac update metadata references actual zip artifacts.
-          if [ -n "$mac_arm64_yml" ]; then
-            # Split-arch build: check x64 and arm64 separately
-            echo "Checking x64 zip references in $mac_yml..."
-            x64_zips=$(grep -Eo '[^[:space:]]+x64[^[:space:]]+\.zip' "$mac_yml" || true)
-            if [ -n "$x64_zips" ]; then
-              while IFS= read -r f; do
-                b="$(basename "$f")"
-                if [ -f "release/$b" ]; then
-                  echo "  ✓ $b"
-                else
-                  echo "  ❌ Missing: $b"
-                  exit 1
-                fi
-              done <<< "$x64_zips"
-            else
-              echo "  ⚠ No x64 zip references found in $mac_yml"
+            duplicate_refs="$(
+              sed -nE "s/^[[:space:]]*-[[:space:]]*(url|path):[[:space:]]*\"?([^\"#]+\\.zip)\"?.*/\\2/p" "$mac_yml" \
+              | awk -F/ '{print $NF}' \
+              | sort | uniq -d
+            )"
+            if [ -n "$duplicate_refs" ]; then
+              echo "❌ Duplicate zip references found in $mac_yml:"
+              echo "$duplicate_refs"
+              exit 1
             fi
 
-            echo "Checking arm64 zip references in $mac_arm64_yml..."
-            arm64_zips=$(grep -Eo '[^[:space:]]+arm64[^[:space:]]+\.zip' "$mac_arm64_yml" || true)
-            if [ -n "$arm64_zips" ]; then
-              while IFS= read -r f; do
-                b="$(basename "$f")"
-                if [ -f "release/$b" ]; then
-                  echo "  ✓ $b"
-                else
-                  echo "  ❌ Missing: $b"
-                  exit 1
-                fi
-              done <<< "$arm64_zips"
-            else
-              echo "  ⚠ No arm64 zip references found in $mac_arm64_yml"
-            fi
-          else
-            # Universal build: check both archs in single file
-            echo "Checking arm64 zip references in $mac_yml..."
-            arm64_zips=$(grep -Eo '[^[:space:]]+arm64[^[:space:]]+\.zip' "$mac_yml" || true)
-            if [ -n "$arm64_zips" ]; then
-              while IFS= read -r f; do
-                b="$(basename "$f")"
-                [ -f "release/$b" ] || { echo "  ❌ Missing: $b"; exit 1; }
-                echo "  ✓ $b"
-              done <<< "$arm64_zips"
+            zip_refs="$(
+              sed -nE "s/^[[:space:]]*-[[:space:]]*(url|path):[[:space:]]*\"?([^\"#]+\\.zip)\"?.*/\\2/p" "$mac_yml" \
+              | awk -F/ '{print $NF}' \
+              | sort -u
+            )"
+
+            if [ -z "$zip_refs" ]; then
+              echo "❌ No zip references found in $mac_yml"
+              cat "$mac_yml"
+              exit 1
             fi
 
-            echo "Checking x64 zip references in $mac_yml..."
-            x64_zips=$(grep -Eo '[^[:space:]]+x64[^[:space:]]+\.zip' "$mac_yml" || true)
-            if [ -n "$x64_zips" ]; then
-              while IFS= read -r f; do
-                b="$(basename "$f")"
-                [ -f "release/$b" ] || { echo "  ❌ Missing: $b"; exit 1; }
-                echo "  ✓ $b"
-              done <<< "$x64_zips"
-            fi
-          fi
+            while IFS= read -r zip_file; do
+              [ -n "$zip_file" ] || continue
+              if [ -f "release/$zip_file" ]; then
+                echo "  ✓ $zip_file"
+              else
+                echo "  ❌ Missing: $zip_file"
+                exit 1
+              fi
+            done <<< "$zip_refs"
+          done
 
           echo ""
           echo "=== Validating all metadata file references ==="
@@ -924,19 +875,6 @@ jobs:
             echo "aws CLI not found on runner."
             exit 1
           fi
-
-          # CRITICAL: Delete old channel-specific metadata files to prevent arm64 clients
-          # from downloading x64 packages. Only latest-mac*.yml should exist.
-          echo "Cleaning up old channel-specific metadata files..."
-          for old_file in alpha-mac.yml alpha-mac-arm64.yml beta-mac.yml beta-mac-arm64.yml; do
-            if aws s3 ls "s3://${ALI_BUCKET_NAME}/${old_file}" --endpoint-url "${ALI_ENDPOINT_URL}" 2>/dev/null; then
-              echo "Deleting s3://${ALI_BUCKET_NAME}/${old_file}"
-              aws s3 rm "s3://${ALI_BUCKET_NAME}/${old_file}" --endpoint-url "${ALI_ENDPOINT_URL}" || echo "⚠ Failed to delete ${old_file}, continuing..."
-            else
-              echo "✓ ${old_file} does not exist, skipping"
-            fi
-          done
-          echo ""
 
           shopt -s nullglob
           files=(release/*.exe release/*.zip release/*.dmg release/*.AppImage release/*.snap release/*.deb release/*.rpm release/*.tar.gz release/*.yml release/*.blockmap)
