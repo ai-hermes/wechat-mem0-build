@@ -613,6 +613,21 @@ jobs:
             fi
           done
 
+          # CRITICAL: electron-updater with channel=alpha still checks latest-mac-arm64.yml first
+          # If alpha-mac-arm64.yml exists but latest-mac-arm64.yml doesn't, arm64 clients fall back
+          # to latest-mac.yml (which may be an old universal build with x64 listed first).
+          # Solution: always copy alpha/beta metadata to latest-* as well.
+          for channel in alpha beta; do
+            if [ -f "release/${channel}-mac.yml" ] && [ ! -f "release/latest-mac.yml" ]; then
+              cp "release/${channel}-mac.yml" "release/latest-mac.yml"
+              echo "✓ Copied ${channel}-mac.yml → latest-mac.yml"
+            fi
+            if [ -f "release/${channel}-mac-arm64.yml" ] && [ ! -f "release/latest-mac-arm64.yml" ]; then
+              cp "release/${channel}-mac-arm64.yml" "release/latest-mac-arm64.yml"
+              echo "✓ Copied ${channel}-mac-arm64.yml → latest-mac-arm64.yml"
+            fi
+          done
+
           echo "Final release directory:"
           ls -la release
 
