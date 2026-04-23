@@ -528,7 +528,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
 
-      - name: Normalize mac updater metadata filenames
+      - name: Tag mac metadata with architecture
         if: matrix.platform == 'mac'
         shell: bash
         env:
@@ -536,18 +536,19 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Single-arch builds generate generic *-mac.yml
-          # Tag with arch suffix for deterministic assembly later
+          # electron-builder generates generic *-mac.yml for single-arch builds
+          # Rename (not copy) to arch-tagged version for deterministic assembly
           for channel in latest alpha beta; do
-            base="release/${channel}-mac.yml"
-            if [ -f "$base" ]; then
-              tagged="release/${channel}-mac-${TARGET_ARCH}.yml"
-              cp "$base" "$tagged"
-              echo "Tagged $base -> $tagged for ${TARGET_ARCH} metadata"
+            generic="release/${channel}-mac.yml"
+            tagged="release/${channel}-mac-${TARGET_ARCH}.yml"
+
+            if [ -f "$generic" ]; then
+              mv "$generic" "$tagged"
+              echo "Tagged: $generic → $tagged"
             fi
           done
 
-          ls -la release | grep -E 'mac.*\.yml' || true
+          ls -la release/*.yml || true
 
       - name: Upload release artifacts from matrix job
         if: needs.prepare_release.outputs.should_release == 'true'
@@ -580,7 +581,7 @@ jobs:
           merge-multiple: false
           path: artifacts
 
-      - name: Assemble release artifacts deterministically
+      - name: Assemble release artifacts
         shell: bash
         run: |
           set -euo pipefail
@@ -588,23 +589,31 @@ jobs:
           rm -rf release
           mkdir -p release
 
-          # Copy non-metadata files from all matrix jobs.
+          # Copy all binary artifacts (non-yml files)
           for dir in artifacts/release-*; do
             [ -d "$dir" ] || continue
-            find "$dir" -maxdepth 1 -type f ! -name '*-mac*.yml' -exec cp -f {} release/ \;
+            find "$dir" -maxdepth 1 -type f ! -name '*.yml' -exec cp -f {} release/ \;
           done
 
-          # Assemble mac metadata with correct naming for electron-updater:
-          # - x64 metadata -> *-mac.yml (updater expects this for x64 clients)
-          # - arm64 metadata -> *-mac-arm64.yml (updater expects this for arm64 clients)
+          # Assemble mac metadata with electron-updater expected naming:
+          # - x64 clients expect: latest-mac.yml
+          # - arm64 clients expect: latest-mac-arm64.yml
           for channel in latest alpha beta; do
-            x64_tagged="artifacts/release-mac-x64/${channel}-mac-x64.yml"
-            arm64_tagged="artifacts/release-mac-arm64/${channel}-mac-arm64.yml"
+            x64_src="artifacts/release-mac-x64/${channel}-mac-x64.yml"
+            arm64_src="artifacts/release-mac-arm64/${channel}-mac-arm64.yml"
 
-            [ -f "$x64_tagged" ] && cp -f "$x64_tagged" "release/${channel}-mac.yml"
-            [ -f "$arm64_tagged" ] && cp -f "$arm64_tagged" "release/${channel}-mac-arm64.yml"
+            if [ -f "$x64_src" ]; then
+              cp "$x64_src" "release/${channel}-mac.yml"
+              echo "✓ x64 metadata: ${channel}-mac.yml"
+            fi
+
+            if [ -f "$arm64_src" ]; then
+              cp "$arm64_src" "release/${channel}-mac-arm64.yml"
+              echo "✓ arm64 metadata: ${channel}-mac-arm64.yml"
+            fi
           done
 
+          echo "Final release directory:"
           ls -la release
 
       - name: Validate release artifacts
