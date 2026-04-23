@@ -124,10 +124,14 @@ jobs:
           fi
 
           echo "Creating release '$VERSION' in ai-hermes/wechat-mem0"
+          source_is_prerelease=false
+          if [[ "${VERSION}" == *-* ]]; then
+            source_is_prerelease=true
+          fi
           RELEASE_CREATE_CODE=$(curl -sS -o /tmp/source_release_create.json -w "%{http_code}" \
             -X POST -H "$AUTH_HEADER" -H "$ACCEPT_HEADER" -H "$CONTENT_HEADER" \
             "${API_ROOT}/releases" \
-            -d "{\"tag_name\":\"${VERSION}\",\"target_commitish\":\"${SOURCE_SHA}\",\"generate_release_notes\":false,\"draft\":false,\"prerelease\":false}")
+            -d "{\"tag_name\":\"${VERSION}\",\"target_commitish\":\"${SOURCE_SHA}\",\"generate_release_notes\":false,\"draft\":false,\"prerelease\":${source_is_prerelease}}")
           if [ "$RELEASE_CREATE_CODE" != "201" ]; then
             echo "Failed to create release '$VERSION' (HTTP $RELEASE_CREATE_CODE)."
             cat /tmp/source_release_create.json
