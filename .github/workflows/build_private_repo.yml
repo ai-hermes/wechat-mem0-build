@@ -124,10 +124,14 @@ jobs:
           fi
 
           echo "Creating release '$VERSION' in ai-hermes/wechat-mem0"
+          source_is_prerelease=false
+          if [[ "${VERSION}" == *-* ]]; then
+            source_is_prerelease=true
+          fi
           RELEASE_CREATE_CODE=$(curl -sS -o /tmp/source_release_create.json -w "%{http_code}" \
             -X POST -H "$AUTH_HEADER" -H "$ACCEPT_HEADER" -H "$CONTENT_HEADER" \
             "${API_ROOT}/releases" \
-            -d "{\"tag_name\":\"${VERSION}\",\"target_commitish\":\"${SOURCE_SHA}\",\"generate_release_notes\":false,\"draft\":false,\"prerelease\":false}")
+            -d "{\"tag_name\":\"${VERSION}\",\"target_commitish\":\"${SOURCE_SHA}\",\"generate_release_notes\":false,\"draft\":false,\"prerelease\":${source_is_prerelease}}")
           if [ "$RELEASE_CREATE_CODE" != "201" ]; then
             echo "Failed to create release '$VERSION' (HTTP $RELEASE_CREATE_CODE)."
             cat /tmp/source_release_create.json
@@ -844,27 +848,81 @@ jobs:
           fi
 
       - name: Release
-        uses: softprops/action-gh-release@v2
-        with:
-          token: ${{ secrets.PRIVATE_REPO_PAT }}
-          tag_name: ${{ needs.prepare_release.outputs.release_tag }}
-          prerelease: ${{ needs.prepare_release.outputs.is_nightly == 'true' }}
-          target_commitish: ${{ needs.prepare_release.outputs.release_target_commitish }}
-          generate_release_notes: false
-          draft: false
-          files: |
-            release/*.exe
-            release/*.zip
-            release/*.dmg
-            release/*.AppImage
-            release/*.snap
-            release/*.deb
-            release/*.rpm
-            release/*.tar.gz
-            release/*.yml
-            release/*.blockmap
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          RELEASE_TAG: ${{ needs.prepare_release.outputs.release_tag }}
+          RELEASE_TARGET: ${{ needs.prepare_release.outputs.release_target_commitish }}
+          IS_NIGHTLY: ${{ needs.prepare_release.outputs.is_nightly }}
+        run: |
+          set -euo pipefail
+
+          if ! command -v gh >/dev/null 2>&1; then
+            echo "gh CLI not found on runner."
+            exit 1
+          fi
+
+          is_prerelease=false
+          if [ "${IS_NIGHTLY}" = "true" ] || [[ "${RELEASE_TAG}" == *-* ]]; then
+            is_prerelease=true
+          fi
+
+          release_id="$(
+            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.id' 2>/dev/null || true
+          )"
+
+          if [ -n "${release_id}" ]; then
+            echo "Updating existing release ${release_id} for tag ${RELEASE_TAG} (prerelease=${is_prerelease})"
+            gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+              -X PATCH \
+              -f tag_name="${RELEASE_TAG}" \
+              -f target_commitish="${RELEASE_TARGET}" \
+              -f name="${RELEASE_TAG}" \
+              -F draft=false \
+              -F prerelease="${is_prerelease}" \
+              -F generate_release_notes=false >/dev/null
+          else
+            echo "Creating release for tag ${RELEASE_TAG} (prerelease=${is_prerelease})"
+            gh api "repos/${GITHUB_REPOSITORY}/releases" \
+              -X POST \
+              -f tag_name="${RELEASE_TAG}" \
+              -f target_commitish="${RELEASE_TARGET}" \
+              -f name="${RELEASE_TAG}" \
+              -F draft=false \
+              -F prerelease="${is_prerelease}" \
+              -F generate_release_notes=false >/dev/null
+          fi
+
+          shopt -s nullglob
+          files=(release/*.exe release/*.zip release/*.dmg release/*.AppImage release/*.snap release/*.deb release/*.rpm release/*.tar.gz release/*.yml release/*.blockmap)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No artifacts found under release/. Cannot publish GitHub release assets."
+            exit 1
+          fi
+
+          for file in "${files[@]}"; do
+            [ -f "${file}" ] || continue
+            base="$(basename "${file}")"
+            uploaded=false
+            for attempt in 1 2 3; do
+              if gh release upload "${RELEASE_TAG}" "${file}" --clobber --repo "${GITHUB_REPOSITORY}"; then
+                echo "Uploaded ${base}"
+                uploaded=true
+                break
+              fi
+
+              if [ "${attempt}" -lt 3 ]; then
+                sleep_seconds=$((attempt * 5))
+                echo "Upload failed for ${base}, retrying in ${sleep_seconds}s (attempt ${attempt}/3)..."
+                sleep "${sleep_seconds}"
+              fi
+            done
+
+            if [ "${uploaded}" != "true" ]; then
+              echo "Failed to upload ${base} after 3 attempts."
+              exit 1
+            fi
+          done
 
       - name: Upload artifacts to Alibaba OSS (S3)
         shell: bash
