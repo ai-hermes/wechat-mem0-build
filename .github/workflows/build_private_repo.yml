@@ -619,6 +619,17 @@ jobs:
             fi
           done
 
+          # TEMPORARY: Create channel-specific metadata files as copies of latest-mac-arm64.yml
+          # to allow old clients (without channel='latest' fix) to update to new versions.
+          # These can be removed once all users have updated to versions with the fix.
+          if [ -f "release/latest-mac-arm64.yml" ]; then
+            cp "release/latest-mac-arm64.yml" "release/alpha-mac.yml"
+            cp "release/latest-mac-arm64.yml" "release/beta-mac.yml"
+            echo "✓ Created temporary channel-specific metadata for backward compatibility"
+            echo "  - alpha-mac.yml (copy of latest-mac-arm64.yml)"
+            echo "  - beta-mac.yml (copy of latest-mac-arm64.yml)"
+          fi
+
           echo "Final release directory:"
           ls -la release
 
