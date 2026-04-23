@@ -892,6 +892,19 @@ jobs:
             exit 1
           fi
 
+          # CRITICAL: Delete old channel-specific metadata files to prevent arm64 clients
+          # from downloading x64 packages. Only latest-mac*.yml should exist.
+          echo "Cleaning up old channel-specific metadata files..."
+          for old_file in alpha-mac.yml alpha-mac-arm64.yml beta-mac.yml beta-mac-arm64.yml; do
+            if aws s3 ls "s3://${ALI_BUCKET_NAME}/${old_file}" --endpoint-url "${ALI_ENDPOINT_URL}" 2>/dev/null; then
+              echo "Deleting s3://${ALI_BUCKET_NAME}/${old_file}"
+              aws s3 rm "s3://${ALI_BUCKET_NAME}/${old_file}" --endpoint-url "${ALI_ENDPOINT_URL}" || echo "⚠ Failed to delete ${old_file}, continuing..."
+            else
+              echo "✓ ${old_file} does not exist, skipping"
+            fi
+          done
+          echo ""
+
           shopt -s nullglob
           files=(release/*.exe release/*.zip release/*.dmg release/*.AppImage release/*.snap release/*.deb release/*.rpm release/*.tar.gz release/*.yml release/*.blockmap)
           if [ "${#files[@]}" -eq 0 ]; then
