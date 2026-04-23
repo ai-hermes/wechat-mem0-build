@@ -598,33 +598,24 @@ jobs:
           # Assemble mac metadata with electron-updater expected naming:
           # - x64 clients expect: latest-mac.yml
           # - arm64 clients expect: latest-mac-arm64.yml
+          #
+          # CRITICAL: electron-updater with channel=alpha prioritizes alpha-mac.yml over alpha-mac-arm64.yml,
+          # causing arm64 clients to download x64 packages. Solution: ONLY publish latest-mac*.yml files,
+          # never alpha-mac.yml or beta-mac.yml. This forces all clients to use latest-mac*.yml with
+          # correct arch selection.
           for channel in latest alpha beta; do
             x64_src="artifacts/release-mac-x64/${channel}-mac-x64.yml"
             arm64_src="artifacts/release-mac-arm64/${channel}-mac-arm64.yml"
 
+            # Always copy to latest-mac*.yml (never alpha-mac.yml or beta-mac.yml)
             if [ -f "$x64_src" ]; then
-              cp "$x64_src" "release/${channel}-mac.yml"
-              echo "✓ x64 metadata: ${channel}-mac.yml"
+              cp "$x64_src" "release/latest-mac.yml"
+              echo "✓ x64 metadata: latest-mac.yml (from ${channel})"
             fi
 
             if [ -f "$arm64_src" ]; then
-              cp "$arm64_src" "release/${channel}-mac-arm64.yml"
-              echo "✓ arm64 metadata: ${channel}-mac-arm64.yml"
-            fi
-          done
-
-          # CRITICAL: electron-updater with channel=alpha still checks latest-mac-arm64.yml first
-          # If alpha-mac-arm64.yml exists but latest-mac-arm64.yml doesn't, arm64 clients fall back
-          # to latest-mac.yml (which may be an old universal build with x64 listed first).
-          # Solution: always copy alpha/beta metadata to latest-* as well.
-          for channel in alpha beta; do
-            if [ -f "release/${channel}-mac.yml" ] && [ ! -f "release/latest-mac.yml" ]; then
-              cp "release/${channel}-mac.yml" "release/latest-mac.yml"
-              echo "✓ Copied ${channel}-mac.yml → latest-mac.yml"
-            fi
-            if [ -f "release/${channel}-mac-arm64.yml" ] && [ ! -f "release/latest-mac-arm64.yml" ]; then
-              cp "release/${channel}-mac-arm64.yml" "release/latest-mac-arm64.yml"
-              echo "✓ Copied ${channel}-mac-arm64.yml → latest-mac-arm64.yml"
+              cp "$arm64_src" "release/latest-mac-arm64.yml"
+              echo "✓ arm64 metadata: latest-mac-arm64.yml (from ${channel})"
             fi
           done
 
