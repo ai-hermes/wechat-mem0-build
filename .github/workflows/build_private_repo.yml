@@ -640,25 +640,6 @@ jobs:
               echo "✓ arm64 metadata: ${channel}-mac.yml"
             fi
           done
-              cp "$x64_src" "release/${channel}-mac.yml"
-              echo "✓ x64 metadata: ${channel}-mac.yml"
-            elif [ -f "$arm64_src" ]; then
-              cp "$arm64_src" "release/${channel}-mac.yml"
-              echo "✓ arm64 metadata: ${channel}-mac.yml"
-=======
-            # Publish x64 metadata as latest-mac.yml
-            if [ -f "$x64_src" ]; then
-              cp "$x64_src" "release/latest-mac.yml"
-              echo "✓ x64 metadata: latest-mac.yml (from ${channel})"
-            fi
-
-            # Publish ARM64 metadata as latest-arm64-mac.yml (for channel 'latest-arm64')
-            if [ -f "$arm64_src" ]; then
-              cp "$arm64_src" "release/latest-arm64-mac.yml"
-              echo "✓ ARM64 metadata: latest-arm64-mac.yml (from ${channel})"
->>>>>>> origin/main
-            fi
-          done
 
           # TEMPORARY: Create channel-specific metadata files as copies of latest-mac-arm64.yml
           # to allow old clients (without channel='latest' fix) to update to new versions.
