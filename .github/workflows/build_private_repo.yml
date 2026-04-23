@@ -596,15 +596,56 @@ jobs:
           done
 
           # Assemble mac metadata with electron-updater expected naming:
-          # electron-updater's getChannelFilePrefix() returns "-mac" for macOS, so:
-          # - channel 'latest' becomes 'latest-mac.yml' (for x64)
-          # - channel 'latest-arm64' becomes 'latest-arm64-mac.yml' (for ARM64)
-          #
-          # We publish both files to support architecture-specific updates.
+          # electron-updater on macOS uses the same channel file (latest-mac.yml) for both architectures.
+          # It automatically selects the correct file from the 'files' list based on process.arch.
+          # Solution: Merge both x64 and arm64 files into a single latest-mac.yml
           for channel in latest alpha beta; do
             x64_src="artifacts/release-mac-x64/${channel}-mac-x64.yml"
             arm64_src="artifacts/release-mac-arm64/${channel}-mac-arm64.yml"
 
+            if [ -f "$x64_src" ] && [ -f "$arm64_src" ]; then
+              # Merge both architectures into a single yml file using pure bash
+              # Extract version and releaseDate from x64 file
+              version=$(grep '^version:' "$x64_src" | head -1)
+              x64_date=$(grep '^releaseDate:' "$x64_src" | head -1 | cut -d"'" -f2)
+              arm64_date=$(grep '^releaseDate:' "$arm64_src" | head -1 | cut -d"'" -f2)
+
+              # Use the latest releaseDate
+              if [[ "$arm64_date" > "$x64_date" ]]; then
+                release_date="releaseDate: '$arm64_date'"
+              else
+                release_date="releaseDate: '$x64_date'"
+              fi
+
+              # Create merged yml file
+              {
+                echo "$version"
+                echo "files:"
+                # Extract files section from x64 (skip first 2 lines: version and files:)
+                sed -n '/^files:/,/^[a-z]/p' "$x64_src" | sed '1d;$d'
+                # Extract files section from arm64 (skip first 2 lines: version and files:)
+                sed -n '/^files:/,/^[a-z]/p' "$arm64_src" | sed '1d;$d'
+                # Add path and sha512 from x64 (primary)
+                grep '^path:' "$x64_src"
+                grep '^sha512:' "$x64_src"
+                echo "$release_date"
+              } > "release/${channel}-mac.yml"
+
+              echo "✓ Universal metadata: ${channel}-mac.yml (x64 + arm64)"
+            elif [ -f "$x64_src" ]; then
+              cp "$x64_src" "release/${channel}-mac.yml"
+              echo "✓ x64 metadata: ${channel}-mac.yml"
+            elif [ -f "$arm64_src" ]; then
+              cp "$arm64_src" "release/${channel}-mac.yml"
+              echo "✓ arm64 metadata: ${channel}-mac.yml"
+            fi
+          done
+              cp "$x64_src" "release/${channel}-mac.yml"
+              echo "✓ x64 metadata: ${channel}-mac.yml"
+            elif [ -f "$arm64_src" ]; then
+              cp "$arm64_src" "release/${channel}-mac.yml"
+              echo "✓ arm64 metadata: ${channel}-mac.yml"
+=======
             # Publish x64 metadata as latest-mac.yml
             if [ -f "$x64_src" ]; then
               cp "$x64_src" "release/latest-mac.yml"
@@ -615,6 +656,7 @@ jobs:
             if [ -f "$arm64_src" ]; then
               cp "$arm64_src" "release/latest-arm64-mac.yml"
               echo "✓ ARM64 metadata: latest-arm64-mac.yml (from ${channel})"
+>>>>>>> origin/main
             fi
           done
 
