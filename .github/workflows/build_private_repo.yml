@@ -596,20 +596,42 @@ jobs:
           done
 
           # Assemble mac metadata with electron-updater expected naming:
-          # - x64 clients expect: latest-mac.yml
-          # - arm64 clients expect: latest-mac-arm64.yml
+          # electron-updater on macOS uses the same channel file (latest-mac.yml) for both architectures.
+          # It automatically selects the correct file from the 'files' list based on process.arch.
+          # Solution: Merge both x64 and arm64 files into a single latest-mac.yml
           for channel in latest alpha beta; do
             x64_src="artifacts/release-mac-x64/${channel}-mac-x64.yml"
             arm64_src="artifacts/release-mac-arm64/${channel}-mac-arm64.yml"
 
-            if [ -f "$x64_src" ]; then
+            if [ -f "$x64_src" ] && [ -f "$arm64_src" ]; then
+              # Merge both architectures into a single yml file
+              python3 -c "
+import yaml
+import sys
+
+with open('$x64_src', 'r') as f:
+    x64_data = yaml.safe_load(f)
+with open('$arm64_src', 'r') as f:
+    arm64_data = yaml.safe_load(f)
+
+# Merge files from both architectures
+merged = x64_data.copy()
+merged['files'] = x64_data.get('files', []) + arm64_data.get('files', [])
+
+# Use the latest releaseDate
+if 'releaseDate' in arm64_data and arm64_data['releaseDate'] > x64_data.get('releaseDate', ''):
+    merged['releaseDate'] = arm64_data['releaseDate']
+
+with open('release/${channel}-mac.yml', 'w') as f:
+    yaml.dump(merged, f, default_flow_style=False, sort_keys=False)
+"
+              echo "✓ Universal metadata: ${channel}-mac.yml (x64 + arm64)"
+            elif [ -f "$x64_src" ]; then
               cp "$x64_src" "release/${channel}-mac.yml"
               echo "✓ x64 metadata: ${channel}-mac.yml"
-            fi
-
-            if [ -f "$arm64_src" ]; then
-              cp "$arm64_src" "release/${channel}-mac-arm64.yml"
-              echo "✓ arm64 metadata: ${channel}-mac-arm64.yml"
+            elif [ -f "$arm64_src" ]; then
+              cp "$arm64_src" "release/${channel}-mac.yml"
+              echo "✓ arm64 metadata: ${channel}-mac.yml"
             fi
           done
 
