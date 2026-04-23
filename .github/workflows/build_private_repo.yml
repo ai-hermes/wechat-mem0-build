@@ -596,28 +596,38 @@ jobs:
           done
 
           # Assemble mac metadata with electron-updater expected naming:
-          # - x64 clients expect: latest-mac.yml
-          # - arm64 clients expect: latest-mac-arm64.yml
+          # electron-updater's getChannelFilePrefix() returns "-mac" for macOS, so:
+          # - channel 'latest' becomes 'latest-mac.yml' (for x64)
+          # - channel 'latest-arm64' becomes 'latest-arm64-mac.yml' (for ARM64)
           #
-          # CRITICAL: electron-updater with channel=alpha prioritizes alpha-mac.yml over alpha-mac-arm64.yml,
-          # causing arm64 clients to download x64 packages. Solution: ONLY publish latest-mac*.yml files,
-          # never alpha-mac.yml or beta-mac.yml. This forces all clients to use latest-mac*.yml with
-          # correct arch selection.
+          # We publish both files to support architecture-specific updates.
           for channel in latest alpha beta; do
             x64_src="artifacts/release-mac-x64/${channel}-mac-x64.yml"
             arm64_src="artifacts/release-mac-arm64/${channel}-mac-arm64.yml"
 
-            # Always copy to latest-mac*.yml (never alpha-mac.yml or beta-mac.yml)
+            # Publish x64 metadata as latest-mac.yml
             if [ -f "$x64_src" ]; then
               cp "$x64_src" "release/latest-mac.yml"
               echo "✓ x64 metadata: latest-mac.yml (from ${channel})"
             fi
 
+            # Publish ARM64 metadata as latest-arm64-mac.yml (for channel 'latest-arm64')
             if [ -f "$arm64_src" ]; then
-              cp "$arm64_src" "release/latest-mac-arm64.yml"
-              echo "✓ arm64 metadata: latest-mac-arm64.yml (from ${channel})"
+              cp "$arm64_src" "release/latest-arm64-mac.yml"
+              echo "✓ ARM64 metadata: latest-arm64-mac.yml (from ${channel})"
             fi
           done
+
+          # TEMPORARY: Create channel-specific metadata files as copies of latest-mac-arm64.yml
+          # to allow old clients (without channel='latest' fix) to update to new versions.
+          # These can be removed once all users have updated to versions with the fix.
+          if [ -f "release/latest-mac-arm64.yml" ]; then
+            cp "release/latest-mac-arm64.yml" "release/alpha-mac.yml"
+            cp "release/latest-mac-arm64.yml" "release/beta-mac.yml"
+            echo "✓ Created temporary channel-specific metadata for backward compatibility"
+            echo "  - alpha-mac.yml (copy of latest-mac-arm64.yml)"
+            echo "  - beta-mac.yml (copy of latest-mac-arm64.yml)"
+          fi
 
           echo "Final release directory:"
           ls -la release
@@ -891,6 +901,19 @@ jobs:
             echo "aws CLI not found on runner."
             exit 1
           fi
+
+          # CRITICAL: Delete old channel-specific metadata files to prevent arm64 clients
+          # from downloading x64 packages. Only latest-mac*.yml should exist.
+          echo "Cleaning up old channel-specific metadata files..."
+          for old_file in alpha-mac.yml alpha-mac-arm64.yml beta-mac.yml beta-mac-arm64.yml; do
+            if aws s3 ls "s3://${ALI_BUCKET_NAME}/${old_file}" --endpoint-url "${ALI_ENDPOINT_URL}" 2>/dev/null; then
+              echo "Deleting s3://${ALI_BUCKET_NAME}/${old_file}"
+              aws s3 rm "s3://${ALI_BUCKET_NAME}/${old_file}" --endpoint-url "${ALI_ENDPOINT_URL}" || echo "⚠ Failed to delete ${old_file}, continuing..."
+            else
+              echo "✓ ${old_file} does not exist, skipping"
+            fi
+          done
+          echo ""
 
           shopt -s nullglob
           files=(release/*.exe release/*.zip release/*.dmg release/*.AppImage release/*.snap release/*.deb release/*.rpm release/*.tar.gz release/*.yml release/*.blockmap)
