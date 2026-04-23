@@ -596,26 +596,25 @@ jobs:
           done
 
           # Assemble mac metadata with electron-updater expected naming:
-          # - x64 clients expect: latest-mac.yml
-          # - arm64 clients expect: latest-mac-arm64.yml
+          # electron-updater's getChannelFilePrefix() returns "-mac" for macOS, so:
+          # - channel 'latest' becomes 'latest-mac.yml' (for x64)
+          # - channel 'latest-arm64' becomes 'latest-arm64-mac.yml' (for ARM64)
           #
-          # CRITICAL: electron-updater with channel=alpha prioritizes alpha-mac.yml over alpha-mac-arm64.yml,
-          # causing arm64 clients to download x64 packages. Solution: ONLY publish latest-mac*.yml files,
-          # never alpha-mac.yml or beta-mac.yml. This forces all clients to use latest-mac*.yml with
-          # correct arch selection.
+          # We publish both files to support architecture-specific updates.
           for channel in latest alpha beta; do
             x64_src="artifacts/release-mac-x64/${channel}-mac-x64.yml"
             arm64_src="artifacts/release-mac-arm64/${channel}-mac-arm64.yml"
 
-            # Always copy to latest-mac*.yml (never alpha-mac.yml or beta-mac.yml)
+            # Publish x64 metadata as latest-mac.yml
             if [ -f "$x64_src" ]; then
               cp "$x64_src" "release/latest-mac.yml"
               echo "✓ x64 metadata: latest-mac.yml (from ${channel})"
             fi
 
+            # Publish ARM64 metadata as latest-arm64-mac.yml (for channel 'latest-arm64')
             if [ -f "$arm64_src" ]; then
-              cp "$arm64_src" "release/latest-mac-arm64.yml"
-              echo "✓ arm64 metadata: latest-mac-arm64.yml (from ${channel})"
+              cp "$arm64_src" "release/latest-arm64-mac.yml"
+              echo "✓ ARM64 metadata: latest-arm64-mac.yml (from ${channel})"
             fi
           done
 
