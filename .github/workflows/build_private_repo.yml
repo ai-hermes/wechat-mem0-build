@@ -532,6 +532,90 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
 
+      - name: Add version to Windows artifact names
+        if: matrix.platform == 'win'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+
+          const releaseDir = 'release';
+          if (!fs.existsSync(releaseDir)) {
+            console.error('Missing release directory.');
+            process.exit(1);
+          }
+
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const version = String(pkg.version || '').trim();
+          if (!version) {
+            console.error('package.json version is empty; cannot tag Windows artifacts.');
+            process.exit(1);
+          }
+
+          const files = fs.readdirSync(releaseDir);
+          const exeFiles = files.filter((name) => name.toLowerCase().endsWith('.exe'));
+          if (exeFiles.length === 0) {
+            console.log('No Windows .exe artifacts found; skipping rename.');
+            process.exit(0);
+          }
+
+          const renamed = [];
+          for (const oldExeName of exeFiles) {
+            if (oldExeName.includes(version)) {
+              continue;
+            }
+
+            const oldExePath = path.join(releaseDir, oldExeName);
+            const exeBaseName = oldExeName.replace(/\.exe$/i, '');
+            const newExeName = `${exeBaseName}-${version}.exe`;
+            const newExePath = path.join(releaseDir, newExeName);
+
+            if (fs.existsSync(newExePath)) {
+              console.error(`Target file already exists: ${newExeName}`);
+              process.exit(1);
+            }
+
+            fs.renameSync(oldExePath, newExePath);
+            renamed.push(`${oldExeName} -> ${newExeName}`);
+
+            const blockmapCandidates = [
+              {
+                oldName: `${oldExeName}.blockmap`,
+                newName: `${newExeName}.blockmap`
+              },
+              {
+                oldName: `${exeBaseName}.blockmap`,
+                newName: `${exeBaseName}-${version}.blockmap`
+              }
+            ];
+
+            for (const candidate of blockmapCandidates) {
+              const oldBlockmapPath = path.join(releaseDir, candidate.oldName);
+              const newBlockmapPath = path.join(releaseDir, candidate.newName);
+              if (!fs.existsSync(oldBlockmapPath)) continue;
+              if (fs.existsSync(newBlockmapPath)) {
+                console.error(`Target blockmap already exists: ${candidate.newName}`);
+                process.exit(1);
+              }
+              fs.renameSync(oldBlockmapPath, newBlockmapPath);
+              renamed.push(`${candidate.oldName} -> ${candidate.newName}`);
+            }
+          }
+
+          if (renamed.length === 0) {
+            console.log(`All Windows artifacts already include version ${version}.`);
+          } else {
+            console.log('Renamed Windows artifacts:');
+            for (const item of renamed) {
+              console.log(`- ${item}`);
+            }
+          }
+          NODE
+
+          ls -la release || true
+
       - name: Tag mac metadata with architecture
         if: matrix.platform == 'mac'
         shell: bash
@@ -599,14 +683,14 @@ jobs:
             find "$dir" -maxdepth 1 -type f ! -name '*.yml' -exec cp -f {} release/ \;
           done
 
-          # Assemble mac metadata with electron-updater expected naming:
-          # keep one *-mac.yml per channel (latest/alpha/beta), and merge x64 + arm64 entries.
-          # The merged files list is deduplicated by URL/path to avoid duplicate artifacts.
-          for channel in latest alpha beta; do
-            x64_src="artifacts/release-mac-x64/${channel}-mac-x64.yml"
-            arm64_src="artifacts/release-mac-arm64/${channel}-mac-arm64.yml"
+          merge_mac_channel() {
+            local source_channel="$1"
+            local output_file="$2"
+            local x64_src="artifacts/release-mac-x64/${source_channel}-mac-x64.yml"
+            local arm64_src="artifacts/release-mac-arm64/${source_channel}-mac-arm64.yml"
 
             if [ -f "$x64_src" ] && [ -f "$arm64_src" ]; then
+              local version x64_date arm64_date release_date path_line sha_line
               version="$(grep '^version:' "$x64_src" | head -1 || true)"
               [ -n "$version" ] || version="$(grep '^version:' "$arm64_src" | head -1 || true)"
 
@@ -665,17 +749,51 @@ jobs:
                 [ -n "$sha_line" ] || sha_line="$(grep '^sha512:' "$arm64_src" | head -1 || true)"
                 [ -n "$sha_line" ] && echo "$sha_line"
                 [ -n "$release_date" ] && echo "$release_date"
-              } > "release/${channel}-mac.yml"
+              } > "release/${output_file}"
 
-              echo "✓ Merged metadata: ${channel}-mac.yml (x64 + arm64, deduplicated)"
-            elif [ -f "$x64_src" ]; then
-              cp "$x64_src" "release/${channel}-mac.yml"
-              echo "✓ x64 metadata: ${channel}-mac.yml"
-            elif [ -f "$arm64_src" ]; then
-              cp "$arm64_src" "release/${channel}-mac.yml"
-              echo "✓ arm64 metadata: ${channel}-mac.yml"
+              echo "✓ Merged metadata: ${output_file} (x64 + arm64, deduplicated)"
+              return 0
             fi
-          done
+
+            if [ -f "$x64_src" ]; then
+              cp "$x64_src" "release/${output_file}"
+              echo "✓ x64 metadata: ${output_file}"
+              return 0
+            fi
+
+            if [ -f "$arm64_src" ]; then
+              cp "$arm64_src" "release/${output_file}"
+              echo "✓ arm64 metadata: ${output_file}"
+              return 0
+            fi
+
+            return 1
+          }
+
+          # Assemble mac metadata with electron-updater expected naming:
+          # keep one *-mac.yml per channel (latest/alpha/beta/nightly), and merge x64 + arm64 entries.
+          # The merged files list is deduplicated by URL/path to avoid duplicate artifacts.
+          if [ "${IS_NIGHTLY}" = "true" ]; then
+            source_channel=""
+            for candidate in latest alpha beta; do
+              if [ -f "artifacts/release-mac-x64/${candidate}-mac-x64.yml" ] || [ -f "artifacts/release-mac-arm64/${candidate}-mac-arm64.yml" ]; then
+                source_channel="$candidate"
+                break
+              fi
+            done
+            if [ -z "$source_channel" ]; then
+              echo "❌ Missing source mac metadata for nightly output"
+              exit 1
+            fi
+            merge_mac_channel "$source_channel" "nightly-mac.yml" || {
+              echo "❌ Failed to assemble nightly-mac.yml from source channel '${source_channel}'"
+              exit 1
+            }
+          else
+            for channel in latest alpha beta; do
+              merge_mac_channel "$channel" "${channel}-mac.yml" || true
+            done
+          fi
 
           echo "Final release directory:"
           ls -la release
@@ -690,14 +808,22 @@ jobs:
           echo ""
 
           shopt -s nullglob
-          mac_channel_ymls=(release/latest-mac.yml release/alpha-mac.yml release/beta-mac.yml)
+          if [ "${IS_NIGHTLY}" = "true" ]; then
+            mac_channel_ymls=(release/nightly-mac.yml)
+          else
+            mac_channel_ymls=(release/latest-mac.yml release/alpha-mac.yml release/beta-mac.yml)
+          fi
           existing_mac_channel_ymls=()
           for yml in "${mac_channel_ymls[@]}"; do
             [ -f "$yml" ] && existing_mac_channel_ymls+=("$yml")
           done
 
           if [ "${#existing_mac_channel_ymls[@]}" -eq 0 ]; then
-            echo "❌ Missing mac update metadata file (latest-mac.yml / alpha-mac.yml / beta-mac.yml)"
+            if [ "${IS_NIGHTLY}" = "true" ]; then
+              echo "❌ Missing mac update metadata file (nightly-mac.yml)"
+            else
+              echo "❌ Missing mac update metadata file (latest-mac.yml / alpha-mac.yml / beta-mac.yml)"
+            fi
             exit 1
           fi
 
