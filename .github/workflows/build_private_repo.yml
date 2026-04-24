@@ -683,14 +683,14 @@ jobs:
             find "$dir" -maxdepth 1 -type f ! -name '*.yml' -exec cp -f {} release/ \;
           done
 
-          merge_mac_channel() {
-            local source_channel="$1"
-            local output_file="$2"
-            local x64_src="artifacts/release-mac-x64/${source_channel}-mac-x64.yml"
-            local arm64_src="artifacts/release-mac-arm64/${source_channel}-mac-arm64.yml"
+          # Assemble mac metadata with electron-updater expected naming:
+          # keep one *-mac.yml per channel (latest/alpha/beta), and merge x64 + arm64 entries.
+          # The merged files list is deduplicated by URL/path to avoid duplicate artifacts.
+          for channel in latest alpha beta; do
+            x64_src="artifacts/release-mac-x64/${channel}-mac-x64.yml"
+            arm64_src="artifacts/release-mac-arm64/${channel}-mac-arm64.yml"
 
             if [ -f "$x64_src" ] && [ -f "$arm64_src" ]; then
-              local version x64_date arm64_date release_date path_line sha_line
               version="$(grep '^version:' "$x64_src" | head -1 || true)"
               [ -n "$version" ] || version="$(grep '^version:' "$arm64_src" | head -1 || true)"
 
@@ -749,50 +749,22 @@ jobs:
                 [ -n "$sha_line" ] || sha_line="$(grep '^sha512:' "$arm64_src" | head -1 || true)"
                 [ -n "$sha_line" ] && echo "$sha_line"
                 [ -n "$release_date" ] && echo "$release_date"
-              } > "release/${output_file}"
+              } > "release/${channel}-mac.yml"
 
-              echo "✓ Merged metadata: ${output_file} (x64 + arm64, deduplicated)"
-              return 0
+              echo "✓ Merged metadata: ${channel}-mac.yml (x64 + arm64, deduplicated)"
+            elif [ -f "$x64_src" ]; then
+              cp "$x64_src" "release/${channel}-mac.yml"
+              echo "✓ x64 metadata: ${channel}-mac.yml"
+            elif [ -f "$arm64_src" ]; then
+              cp "$arm64_src" "release/${channel}-mac.yml"
+              echo "✓ arm64 metadata: ${channel}-mac.yml"
             fi
+          done
 
-            if [ -f "$x64_src" ]; then
-              cp "$x64_src" "release/${output_file}"
-              echo "✓ x64 metadata: ${output_file}"
-              return 0
-            fi
-
-            if [ -f "$arm64_src" ]; then
-              cp "$arm64_src" "release/${output_file}"
-              echo "✓ arm64 metadata: ${output_file}"
-              return 0
-            fi
-
-            return 1
-          }
-
-          # Assemble mac metadata with electron-updater expected naming:
-          # keep one *-mac.yml per channel (latest/alpha/beta/nightly), and merge x64 + arm64 entries.
-          # The merged files list is deduplicated by URL/path to avoid duplicate artifacts.
-          if [ "${IS_NIGHTLY}" = "true" ]; then
-            source_channel=""
-            for candidate in latest alpha beta; do
-              if [ -f "artifacts/release-mac-x64/${candidate}-mac-x64.yml" ] || [ -f "artifacts/release-mac-arm64/${candidate}-mac-arm64.yml" ]; then
-                source_channel="$candidate"
-                break
-              fi
-            done
-            if [ -z "$source_channel" ]; then
-              echo "❌ Missing source mac metadata for nightly output"
-              exit 1
-            fi
-            merge_mac_channel "$source_channel" "nightly-mac.yml" || {
-              echo "❌ Failed to assemble nightly-mac.yml from source channel '${source_channel}'"
-              exit 1
-            }
-          else
-            for channel in latest alpha beta; do
-              merge_mac_channel "$channel" "${channel}-mac.yml" || true
-            done
+          # Nightly must not overwrite stable latest-mac.yml.
+          if [ "${IS_NIGHTLY}" = "true" ] && [ -f "release/latest-mac.yml" ]; then
+            mv "release/latest-mac.yml" "release/nightly-mac.yml"
+            echo "✓ Nightly metadata: nightly-mac.yml (from latest-mac.yml)"
           fi
 
           echo "Final release directory:"
