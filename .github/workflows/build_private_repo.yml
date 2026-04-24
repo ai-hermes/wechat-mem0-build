@@ -532,6 +532,90 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
 
+      - name: Add version to Windows artifact names
+        if: matrix.platform == 'win'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+
+          const releaseDir = 'release';
+          if (!fs.existsSync(releaseDir)) {
+            console.error('Missing release directory.');
+            process.exit(1);
+          }
+
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const version = String(pkg.version || '').trim();
+          if (!version) {
+            console.error('package.json version is empty; cannot tag Windows artifacts.');
+            process.exit(1);
+          }
+
+          const files = fs.readdirSync(releaseDir);
+          const exeFiles = files.filter((name) => name.toLowerCase().endsWith('.exe'));
+          if (exeFiles.length === 0) {
+            console.log('No Windows .exe artifacts found; skipping rename.');
+            process.exit(0);
+          }
+
+          const renamed = [];
+          for (const oldExeName of exeFiles) {
+            if (oldExeName.includes(version)) {
+              continue;
+            }
+
+            const oldExePath = path.join(releaseDir, oldExeName);
+            const exeBaseName = oldExeName.replace(/\.exe$/i, '');
+            const newExeName = `${exeBaseName}-${version}.exe`;
+            const newExePath = path.join(releaseDir, newExeName);
+
+            if (fs.existsSync(newExePath)) {
+              console.error(`Target file already exists: ${newExeName}`);
+              process.exit(1);
+            }
+
+            fs.renameSync(oldExePath, newExePath);
+            renamed.push(`${oldExeName} -> ${newExeName}`);
+
+            const blockmapCandidates = [
+              {
+                oldName: `${oldExeName}.blockmap`,
+                newName: `${newExeName}.blockmap`
+              },
+              {
+                oldName: `${exeBaseName}.blockmap`,
+                newName: `${exeBaseName}-${version}.blockmap`
+              }
+            ];
+
+            for (const candidate of blockmapCandidates) {
+              const oldBlockmapPath = path.join(releaseDir, candidate.oldName);
+              const newBlockmapPath = path.join(releaseDir, candidate.newName);
+              if (!fs.existsSync(oldBlockmapPath)) continue;
+              if (fs.existsSync(newBlockmapPath)) {
+                console.error(`Target blockmap already exists: ${candidate.newName}`);
+                process.exit(1);
+              }
+              fs.renameSync(oldBlockmapPath, newBlockmapPath);
+              renamed.push(`${candidate.oldName} -> ${candidate.newName}`);
+            }
+          }
+
+          if (renamed.length === 0) {
+            console.log(`All Windows artifacts already include version ${version}.`);
+          } else {
+            console.log('Renamed Windows artifacts:');
+            for (const item of renamed) {
+              console.log(`- ${item}`);
+            }
+          }
+          NODE
+
+          ls -la release || true
+
       - name: Tag mac metadata with architecture
         if: matrix.platform == 'mac'
         shell: bash
@@ -677,6 +761,12 @@ jobs:
             fi
           done
 
+          # Nightly must not overwrite stable latest-mac.yml.
+          if [ "${IS_NIGHTLY}" = "true" ] && [ -f "release/latest-mac.yml" ]; then
+            mv "release/latest-mac.yml" "release/nightly-mac.yml"
+            echo "✓ Nightly metadata: nightly-mac.yml (from latest-mac.yml)"
+          fi
+
           echo "Final release directory:"
           ls -la release
 
@@ -690,14 +780,22 @@ jobs:
           echo ""
 
           shopt -s nullglob
-          mac_channel_ymls=(release/latest-mac.yml release/alpha-mac.yml release/beta-mac.yml)
+          if [ "${IS_NIGHTLY}" = "true" ]; then
+            mac_channel_ymls=(release/nightly-mac.yml)
+          else
+            mac_channel_ymls=(release/latest-mac.yml release/alpha-mac.yml release/beta-mac.yml)
+          fi
           existing_mac_channel_ymls=()
           for yml in "${mac_channel_ymls[@]}"; do
             [ -f "$yml" ] && existing_mac_channel_ymls+=("$yml")
           done
 
           if [ "${#existing_mac_channel_ymls[@]}" -eq 0 ]; then
-            echo "❌ Missing mac update metadata file (latest-mac.yml / alpha-mac.yml / beta-mac.yml)"
+            if [ "${IS_NIGHTLY}" = "true" ]; then
+              echo "❌ Missing mac update metadata file (nightly-mac.yml)"
+            else
+              echo "❌ Missing mac update metadata file (latest-mac.yml / alpha-mac.yml / beta-mac.yml)"
+            fi
             exit 1
           fi
 
