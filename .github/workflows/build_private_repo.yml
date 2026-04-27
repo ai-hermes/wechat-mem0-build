@@ -562,6 +562,7 @@ jobs:
           }
 
           const renamed = [];
+          const renameMap = new Map();
           for (const oldExeName of exeFiles) {
             if (oldExeName.includes(version)) {
               continue;
@@ -578,6 +579,7 @@ jobs:
             }
 
             fs.renameSync(oldExePath, newExePath);
+            renameMap.set(oldExeName, newExeName);
             renamed.push(`${oldExeName} -> ${newExeName}`);
 
             const blockmapCandidates = [
@@ -600,7 +602,34 @@ jobs:
                 process.exit(1);
               }
               fs.renameSync(oldBlockmapPath, newBlockmapPath);
+              renameMap.set(candidate.oldName, candidate.newName);
               renamed.push(`${candidate.oldName} -> ${candidate.newName}`);
+            }
+          }
+
+          const yamlFiles = fs
+            .readdirSync(releaseDir)
+            .filter((name) => name.toLowerCase().endsWith('.yml'));
+
+          const yamlUpdated = [];
+          for (const yamlName of yamlFiles) {
+            const yamlPath = path.join(releaseDir, yamlName);
+            const original = fs.readFileSync(yamlPath, 'utf8');
+            const updated = original.replace(
+              /^(\s*-?\s*(?:path|url):\s*['"]?)([^'"\n]+)(['"]?\s*)$/gm,
+              (line, prefix, value, suffix) => {
+                const trimmedValue = String(value).trim();
+                const base = path.basename(trimmedValue);
+                if (!renameMap.has(base)) return line;
+                const renamedBase = renameMap.get(base);
+                const replaced = trimmedValue.slice(0, trimmedValue.length - base.length) + renamedBase;
+                return `${prefix}${replaced}${suffix}`;
+              }
+            );
+
+            if (updated !== original) {
+              fs.writeFileSync(yamlPath, updated);
+              yamlUpdated.push(yamlName);
             }
           }
 
@@ -610,6 +639,12 @@ jobs:
             console.log('Renamed Windows artifacts:');
             for (const item of renamed) {
               console.log(`- ${item}`);
+            }
+          }
+          if (yamlUpdated.length > 0) {
+            console.log('Updated metadata files:');
+            for (const name of yamlUpdated) {
+              console.log(`- ${name}`);
             }
           }
           NODE
