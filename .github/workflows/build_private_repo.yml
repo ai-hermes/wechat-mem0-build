@@ -830,24 +830,28 @@ jobs:
           fi
 
           if [ "${IS_NIGHTLY}" = "true" ]; then
-            required_windows_yml="release/nightly.yml"
-            if [ ! -f "${required_windows_yml}" ]; then
+            windows_channel_ymls=(release/nightly.yml)
+            existing_windows_channel_ymls=()
+            for yml in "${windows_channel_ymls[@]}"; do
+              [ -f "$yml" ] && existing_windows_channel_ymls+=("$yml")
+            done
+
+            if [ "${#existing_windows_channel_ymls[@]}" -eq 0 ]; then
               echo "❌ Missing Windows update metadata file (nightly.yml)"
               exit 1
             fi
-            windows_channel_ymls=(release/nightly.yml)
           else
-            required_windows_yml="release/latest.yml"
-            if [ ! -f "${required_windows_yml}" ]; then
-              echo "❌ Missing Windows update metadata file (latest.yml)"
+            windows_channel_ymls=(release/latest.yml release/alpha.yml release/beta.yml)
+            existing_windows_channel_ymls=()
+            for yml in "${windows_channel_ymls[@]}"; do
+              [ -f "$yml" ] && existing_windows_channel_ymls+=("$yml")
+            done
+
+            if [ "${#existing_windows_channel_ymls[@]}" -eq 0 ]; then
+              echo "❌ Missing Windows update metadata file (latest.yml / alpha.yml / beta.yml)"
               exit 1
             fi
-            windows_channel_ymls=(release/latest.yml release/alpha.yml release/beta.yml)
           fi
-          existing_windows_channel_ymls=()
-          for yml in "${windows_channel_ymls[@]}"; do
-            [ -f "$yml" ] && existing_windows_channel_ymls+=("$yml")
-          done
 
           echo "=== Validating Windows metadata presence ==="
           for win_yml in "${existing_windows_channel_ymls[@]}"; do
