@@ -1059,9 +1059,16 @@ jobs:
             is_prerelease=true
           fi
 
-          release_id="$(
-            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.id' 2>/dev/null || true
-          )"
+          release_id=""
+          if existing_release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.id' 2>/dev/null)"; then
+            if [[ "${existing_release_id}" =~ ^[0-9]+$ ]]; then
+              release_id="${existing_release_id}"
+            else
+              echo "Ignoring unexpected release id response for tag ${RELEASE_TAG}: ${existing_release_id}"
+            fi
+          else
+            echo "No existing release found for tag ${RELEASE_TAG}; creating one."
+          fi
 
           if [ -n "${release_id}" ]; then
             echo "Updating existing release ${release_id} for tag ${RELEASE_TAG} (prerelease=${is_prerelease})"
