@@ -26,6 +26,7 @@ jobs:
     outputs:
       source_ref: ${{ steps.compute.outputs.source_ref }}
       release_tag: ${{ steps.compute.outputs.release_tag }}
+      release_channel: ${{ steps.compute.outputs.release_channel }}
       should_release: ${{ steps.compute.outputs.should_release }}
       release_target_commitish: ${{ steps.compute.outputs.release_target_commitish }}
       is_nightly: ${{ steps.compute.outputs.is_nightly }}
@@ -36,26 +37,60 @@ jobs:
         run: |
           set -euo pipefail
 
+          classify_release_channel() {
+            local tag="$1"
+            local stable_regex='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+            local version_regex='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+
+            if [[ ! "$tag" =~ $version_regex ]]; then
+              echo "Invalid version '$tag'. Expected SemVer with leading v (e.g. v1.2.3, v1.2.3-alpha1, v1.2.3-alpha.1)."
+              return 1
+            fi
+
+            if [[ "$tag" =~ $stable_regex ]]; then
+              echo "latest"
+              return 0
+            fi
+
+            local prerelease="${tag#*-}"
+            prerelease="${prerelease%%+*}"
+            local prerelease_lower
+            prerelease_lower="$(printf '%s' "$prerelease" | tr '[:upper:]' '[:lower:]')"
+
+            if [[ "$prerelease_lower" == *alpha* ]]; then
+              echo "alpha"
+              return 0
+            fi
+            if [[ "$prerelease_lower" == *beta* ]]; then
+              echo "beta"
+              return 0
+            fi
+
+            echo "Unsupported prerelease tag '$tag'. Only alpha/beta prerelease tags are allowed."
+            return 1
+          }
+
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION="${{ github.event.inputs.version }}"
-            if [[ ! "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
-              echo "Invalid version '$VERSION'. Expected SemVer with leading v (e.g. v1.2.3 or v1.2.3-alpha.1)."
-              exit 1
-            fi
+            RELEASE_CHANNEL="$(classify_release_channel "$VERSION")" || exit 1
             echo "source_ref=$VERSION" >> "$GITHUB_OUTPUT"
             echo "release_tag=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "release_channel=${RELEASE_CHANNEL}" >> "$GITHUB_OUTPUT"
             echo "should_release=true" >> "$GITHUB_OUTPUT"
             echo "release_target_commitish=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
             echo "is_nightly=false" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event_name }}" = "schedule" ]; then
             echo "source_ref=main" >> "$GITHUB_OUTPUT"
             echo "release_tag=nightly" >> "$GITHUB_OUTPUT"
+            echo "release_channel=nightly" >> "$GITHUB_OUTPUT"
             echo "should_release=true" >> "$GITHUB_OUTPUT"
             echo "release_target_commitish=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
             echo "is_nightly=true" >> "$GITHUB_OUTPUT"
           else
+            RELEASE_CHANNEL="$(classify_release_channel "${{ github.ref_name }}")" || exit 1
             echo "source_ref=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
             echo "release_tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "release_channel=${RELEASE_CHANNEL}" >> "$GITHUB_OUTPUT"
             echo "should_release=true" >> "$GITHUB_OUTPUT"
             echo "release_target_commitish=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
             echo "is_nightly=false" >> "$GITHUB_OUTPUT"
@@ -686,6 +721,7 @@ jobs:
     env:
       RELEASE_TAG: ${{ needs.prepare_release.outputs.release_tag }}
       IS_NIGHTLY: ${{ needs.prepare_release.outputs.is_nightly }}
+      RELEASE_CHANNEL: ${{ needs.prepare_release.outputs.release_channel }}
       ALI_BUCKET_NAME: rethinkai
       ALI_REGION: cn-shanghai
       ALI_ENDPOINT: s3.oss-cn-shanghai.aliyuncs.com
@@ -705,6 +741,13 @@ jobs:
         run: |
           set -euo pipefail
 
+          source_channel="${RELEASE_CHANNEL}"
+          target_channel="${RELEASE_CHANNEL}"
+          if [ "${IS_NIGHTLY}" = "true" ]; then
+            source_channel="latest"
+            target_channel="nightly"
+          fi
+
           rm -rf release
           mkdir -p release
 
@@ -715,82 +758,82 @@ jobs:
           done
 
           # Assemble mac metadata with electron-updater expected naming:
-          # keep one *-mac.yml per channel (latest/alpha/beta), and merge x64 + arm64 entries.
+          # keep one *-mac.yml for the target channel, and merge x64 + arm64 entries.
           # The merged files list is deduplicated by URL/path to avoid duplicate artifacts.
-          for channel in latest alpha beta; do
-            x64_src="artifacts/release-mac-x64/${channel}-mac-x64.yml"
-            arm64_src="artifacts/release-mac-arm64/${channel}-mac-arm64.yml"
+          channel="$source_channel"
+          x64_src="artifacts/release-mac-x64/${channel}-mac-x64.yml"
+          arm64_src="artifacts/release-mac-arm64/${channel}-mac-arm64.yml"
+          target_mac_yml="release/${target_channel}-mac.yml"
 
-            if [ -f "$x64_src" ] && [ -f "$arm64_src" ]; then
-              version="$(grep '^version:' "$x64_src" | head -1 || true)"
-              [ -n "$version" ] || version="$(grep '^version:' "$arm64_src" | head -1 || true)"
+          if [ -f "$x64_src" ] && [ -f "$arm64_src" ]; then
+            version="$(grep '^version:' "$x64_src" | head -1 || true)"
+            [ -n "$version" ] || version="$(grep '^version:' "$arm64_src" | head -1 || true)"
 
-              x64_date="$(grep '^releaseDate:' "$x64_src" | head -1 | sed -E "s/^releaseDate:[[:space:]]*'?([^']+)'?/\1/" || true)"
-              arm64_date="$(grep '^releaseDate:' "$arm64_src" | head -1 | sed -E "s/^releaseDate:[[:space:]]*'?([^']+)'?/\1/" || true)"
+            x64_date="$(grep '^releaseDate:' "$x64_src" | head -1 | sed -E "s/^releaseDate:[[:space:]]*'?([^']+)'?/\1/" || true)"
+            arm64_date="$(grep '^releaseDate:' "$arm64_src" | head -1 | sed -E "s/^releaseDate:[[:space:]]*'?([^']+)'?/\1/" || true)"
 
-              if [ -n "$x64_date" ] && [ -n "$arm64_date" ]; then
-                if [[ "$arm64_date" > "$x64_date" ]]; then
-                  release_date="releaseDate: '$arm64_date'"
-                else
-                  release_date="releaseDate: '$x64_date'"
-                fi
-              elif [ -n "$x64_date" ]; then
-                release_date="releaseDate: '$x64_date'"
-              elif [ -n "$arm64_date" ]; then
+            if [ -n "$x64_date" ] && [ -n "$arm64_date" ]; then
+              if [[ "$arm64_date" > "$x64_date" ]]; then
                 release_date="releaseDate: '$arm64_date'"
               else
-                release_date=""
+                release_date="releaseDate: '$x64_date'"
               fi
-
-              {
-                echo "$version"
-                echo "files:"
-                awk '
-                  function flush_entry() {
-                    if (!in_entry) return
-                    if (!(entry_key in seen)) {
-                      printf "%s", entry_buf
-                      seen[entry_key] = 1
-                    }
-                    in_entry = 0
-                    entry_key = ""
-                    entry_buf = ""
-                  }
-                  /^files:/ { in_files = 1; next }
-                  in_files && /^[^[:space:]]/ { in_files = 0; flush_entry() }
-                  !in_files { next }
-                  /^[[:space:]]*-[[:space:]]*(url|path):/ {
-                    flush_entry()
-                    in_entry = 1
-                    entry_buf = $0 ORS
-                    entry_key = $0
-                    sub(/^[[:space:]]*-[[:space:]]*(url|path):[[:space:]]*/, "", entry_key)
-                    gsub(/["'\'' ]/, "", entry_key)
-                    next
-                  }
-                  in_entry {
-                    entry_buf = entry_buf $0 ORS
-                  }
-                  END { flush_entry() }
-                ' "$x64_src" "$arm64_src"
-                path_line="$(grep '^path:' "$x64_src" | head -1 || true)"
-                [ -n "$path_line" ] || path_line="$(grep '^path:' "$arm64_src" | head -1 || true)"
-                [ -n "$path_line" ] && echo "$path_line"
-                sha_line="$(grep '^sha512:' "$x64_src" | head -1 || true)"
-                [ -n "$sha_line" ] || sha_line="$(grep '^sha512:' "$arm64_src" | head -1 || true)"
-                [ -n "$sha_line" ] && echo "$sha_line"
-                [ -n "$release_date" ] && echo "$release_date"
-              } > "release/${channel}-mac.yml"
-
-              echo "✓ Merged metadata: ${channel}-mac.yml (x64 + arm64, deduplicated)"
-            elif [ -f "$x64_src" ]; then
-              cp "$x64_src" "release/${channel}-mac.yml"
-              echo "✓ x64 metadata: ${channel}-mac.yml"
-            elif [ -f "$arm64_src" ]; then
-              cp "$arm64_src" "release/${channel}-mac.yml"
-              echo "✓ arm64 metadata: ${channel}-mac.yml"
+            elif [ -n "$x64_date" ]; then
+              release_date="releaseDate: '$x64_date'"
+            elif [ -n "$arm64_date" ]; then
+              release_date="releaseDate: '$arm64_date'"
+            else
+              release_date=""
             fi
-          done
+
+            {
+              echo "$version"
+              echo "files:"
+              awk '
+                function flush_entry() {
+                  if (!in_entry) return
+                  if (!(entry_key in seen)) {
+                    printf "%s", entry_buf
+                    seen[entry_key] = 1
+                  }
+                  in_entry = 0
+                  entry_key = ""
+                  entry_buf = ""
+                }
+                /^files:/ { in_files = 1; next }
+                in_files && /^[^[:space:]]/ { in_files = 0; flush_entry() }
+                !in_files { next }
+                /^[[:space:]]*-[[:space:]]*(url|path):/ {
+                  flush_entry()
+                  in_entry = 1
+                  entry_buf = $0 ORS
+                  entry_key = $0
+                  sub(/^[[:space:]]*-[[:space:]]*(url|path):[[:space:]]*/, "", entry_key)
+                  gsub(/["'\'' ]/, "", entry_key)
+                  next
+                }
+                in_entry {
+                  entry_buf = entry_buf $0 ORS
+                }
+                END { flush_entry() }
+              ' "$x64_src" "$arm64_src"
+              path_line="$(grep '^path:' "$x64_src" | head -1 || true)"
+              [ -n "$path_line" ] || path_line="$(grep '^path:' "$arm64_src" | head -1 || true)"
+              [ -n "$path_line" ] && echo "$path_line"
+              sha_line="$(grep '^sha512:' "$x64_src" | head -1 || true)"
+              [ -n "$sha_line" ] || sha_line="$(grep '^sha512:' "$arm64_src" | head -1 || true)"
+              [ -n "$sha_line" ] && echo "$sha_line"
+              [ -n "$release_date" ] && echo "$release_date"
+            } > "$target_mac_yml"
+
+            echo "✓ Merged metadata: $(basename "$target_mac_yml") (x64 + arm64, deduplicated)"
+          elif [ -f "$x64_src" ]; then
+            cp "$x64_src" "$target_mac_yml"
+            echo "✓ x64 metadata: $(basename "$target_mac_yml")"
+          elif [ -f "$arm64_src" ]; then
+            cp "$arm64_src" "$target_mac_yml"
+            echo "✓ arm64 metadata: $(basename "$target_mac_yml")"
+          fi
 
           # Keep Windows updater metadata generated by electron-builder.
           # We intentionally exclude *-mac*.yml here because mac metadata is assembled above.
@@ -802,31 +845,24 @@ jobs:
               if [[ "$base" == *-mac*.yml ]]; then
                 continue
               fi
-              dest="release/${base}"
+              if [ "$base" != "${source_channel}.yml" ]; then
+                continue
+              fi
+              dest="release/${target_channel}.yml"
               if [ -f "$dest" ]; then
                 if cmp -s "$src" "$dest"; then
-                  echo "✓ Windows metadata already exists (identical): ${base}"
+                  echo "✓ Windows metadata already exists (identical): $(basename "$dest")"
                   continue
                 fi
-                echo "❌ Conflicting metadata file detected: ${base}"
+                echo "❌ Conflicting metadata file detected: $(basename "$dest")"
                 echo "  existing: ${dest}"
                 echo "  incoming: ${src}"
                 exit 1
               fi
               cp "$src" "$dest"
-              echo "✓ Windows metadata: ${base}"
+              echo "✓ Windows metadata: $(basename "$dest")"
             done
           done
-
-          # Nightly must not overwrite stable latest metadata names.
-          if [ "${IS_NIGHTLY}" = "true" ] && [ -f "release/latest-mac.yml" ]; then
-            mv "release/latest-mac.yml" "release/nightly-mac.yml"
-            echo "✓ Nightly metadata: nightly-mac.yml (from latest-mac.yml)"
-          fi
-          if [ "${IS_NIGHTLY}" = "true" ] && [ -f "release/latest.yml" ]; then
-            mv "release/latest.yml" "release/nightly.yml"
-            echo "✓ Nightly metadata: nightly.yml (from latest.yml)"
-          fi
 
           echo "Final release directory:"
           ls -la release
@@ -835,6 +871,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          channel="${RELEASE_CHANNEL}"
 
           echo "=== Release directory contents ==="
           ls -la release
@@ -842,46 +879,29 @@ jobs:
 
           shopt -s nullglob
           if [ "${IS_NIGHTLY}" = "true" ]; then
-            mac_channel_ymls=(release/nightly-mac.yml)
-          else
-            mac_channel_ymls=(release/latest-mac.yml release/alpha-mac.yml release/beta-mac.yml)
+            channel="nightly"
           fi
+
+          mac_channel_ymls=("release/${channel}-mac.yml")
           existing_mac_channel_ymls=()
           for yml in "${mac_channel_ymls[@]}"; do
             [ -f "$yml" ] && existing_mac_channel_ymls+=("$yml")
           done
 
           if [ "${#existing_mac_channel_ymls[@]}" -eq 0 ]; then
-            if [ "${IS_NIGHTLY}" = "true" ]; then
-              echo "❌ Missing mac update metadata file (nightly-mac.yml)"
-            else
-              echo "❌ Missing mac update metadata file (latest-mac.yml / alpha-mac.yml / beta-mac.yml)"
-            fi
+            echo "❌ Missing mac update metadata file (${channel}-mac.yml)"
             exit 1
           fi
 
-          if [ "${IS_NIGHTLY}" = "true" ]; then
-            windows_channel_ymls=(release/nightly.yml)
-            existing_windows_channel_ymls=()
-            for yml in "${windows_channel_ymls[@]}"; do
-              [ -f "$yml" ] && existing_windows_channel_ymls+=("$yml")
-            done
+          windows_channel_ymls=("release/${channel}.yml")
+          existing_windows_channel_ymls=()
+          for yml in "${windows_channel_ymls[@]}"; do
+            [ -f "$yml" ] && existing_windows_channel_ymls+=("$yml")
+          done
 
-            if [ "${#existing_windows_channel_ymls[@]}" -eq 0 ]; then
-              echo "❌ Missing Windows update metadata file (nightly.yml)"
-              exit 1
-            fi
-          else
-            windows_channel_ymls=(release/latest.yml release/alpha.yml release/beta.yml)
-            existing_windows_channel_ymls=()
-            for yml in "${windows_channel_ymls[@]}"; do
-              [ -f "$yml" ] && existing_windows_channel_ymls+=("$yml")
-            done
-
-            if [ "${#existing_windows_channel_ymls[@]}" -eq 0 ]; then
-              echo "❌ Missing Windows update metadata file (latest.yml / alpha.yml / beta.yml)"
-              exit 1
-            fi
+          if [ "${#existing_windows_channel_ymls[@]}" -eq 0 ]; then
+            echo "❌ Missing Windows update metadata file (${channel}.yml)"
+            exit 1
           fi
 
           echo "=== Validating Windows metadata presence ==="
