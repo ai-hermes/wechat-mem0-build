@@ -722,6 +722,10 @@ jobs:
       RELEASE_TAG: ${{ needs.prepare_release.outputs.release_tag }}
       IS_NIGHTLY: ${{ needs.prepare_release.outputs.is_nightly }}
       RELEASE_CHANNEL: ${{ needs.prepare_release.outputs.release_channel }}
+      CDN_BASE_URL: https://static.rethinkai.spotty.com.cn
+      CDN_REFRESH_BATCH_SIZE: 1000
+      CDN_PREHEAT_BATCH_SIZE: 100
+      CDN_PREHEAT_AREA: overseas
       ALI_BUCKET_NAME: rethinkai
       ALI_REGION: cn-shanghai
       ALI_ENDPOINT: s3.oss-cn-shanghai.aliyuncs.com
@@ -1156,6 +1160,9 @@ jobs:
             exit 0
           fi
 
+          : > /tmp/cdn_refresh_urls.txt
+          cdn_base="${CDN_BASE_URL%/}"
+
           for file in "${files[@]}"; do
             [ -f "${file}" ] || continue
             base="$(basename "${file}")"
@@ -1173,6 +1180,7 @@ jobs:
             fi
 
             echo "Uploaded ${file} -> s3://${ALI_BUCKET_NAME}/${base}"
+            echo "${cdn_base}/${base}" >> /tmp/cdn_refresh_urls.txt
           done
 
           version_prefix="versions/${RELEASE_TAG}/"
@@ -1185,6 +1193,154 @@ jobs:
           done
           echo "Uploaded versioned snapshot to s3://${ALI_BUCKET_NAME}/${version_prefix}"
 
+      - name: Refresh and preheat Alibaba CDN for release artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ALI_ACCESS_KEY:-}" ] || [ -z "${ALI_SECRET_KEY:-}" ]; then
+            echo "::warning::Missing ALI_ACCESS_KEY/ALI_SECRET_KEY. Skip CDN refresh/prefetch."
+            exit 0
+          fi
+
+          if [ -z "${CDN_BASE_URL:-}" ]; then
+            echo "::warning::Missing CDN_BASE_URL. Skip CDN refresh/prefetch."
+            exit 0
+          fi
+
+          if [ ! -f /tmp/cdn_refresh_urls.txt ] || [ ! -s /tmp/cdn_refresh_urls.txt ]; then
+            echo "No CDN URLs collected from OSS upload. Skip CDN refresh/prefetch."
+            exit 0
+          fi
+
+          if ! command -v python3 >/dev/null 2>&1; then
+            echo "::warning::python3 not found. Skip CDN refresh/prefetch."
+            exit 0
+          fi
+
+          if ! command -v jq >/dev/null 2>&1; then
+            echo "::warning::jq not found. Skip CDN refresh/prefetch."
+            exit 0
+          fi
+
+          if ! python3 -m pip install --quiet --disable-pip-version-check \
+            alibabacloud_cdn20180510 \
+            alibabacloud_tea_openapi >/dev/null 2>&1; then
+            echo "::warning::Failed to install Alibaba Cloud CDN SDK. Skip CDN refresh/prefetch."
+            exit 0
+          fi
+
+          set +e
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          from typing import List
+
+          from alibabacloud_tea_openapi import models as open_api_models
+          from alibabacloud_cdn20180510.client import Client as CdnClient
+          from alibabacloud_cdn20180510 import models as cdn_models
+
+          urls_file = "/tmp/cdn_refresh_urls.txt"
+          refresh_batch_size = int(os.getenv("CDN_REFRESH_BATCH_SIZE", "1000"))
+          preheat_batch_size = int(os.getenv("CDN_PREHEAT_BATCH_SIZE", "100"))
+          preheat_area = os.getenv("CDN_PREHEAT_AREA", "overseas")
+
+          with open(urls_file, "r", encoding="utf-8") as f:
+              urls = sorted({line.strip() for line in f if line.strip().startswith(("http://", "https://"))})
+
+          result = {
+              "total_urls": len(urls),
+              "refresh_ok": 0,
+              "preheat_ok": 0,
+              "refresh_errors": [],
+              "preheat_errors": [],
+          }
+
+          if not urls:
+              with open("/tmp/cdn_release_result.json", "w", encoding="utf-8") as f:
+                  json.dump(result, f, ensure_ascii=False)
+              sys.exit(0)
+
+          config = open_api_models.Config(
+              access_key_id=os.environ["ALI_ACCESS_KEY"],
+              access_key_secret=os.environ["ALI_SECRET_KEY"],
+              endpoint="cdn.aliyuncs.com",
+          )
+          client = CdnClient(config)
+
+          def chunks(items: List[str], size: int):
+              for i in range(0, len(items), size):
+                  yield items[i:i + size]
+
+          for batch in chunks(urls, max(1, refresh_batch_size)):
+              try:
+                  req = cdn_models.RefreshObjectCachesRequest(
+                      object_type="File",
+                      object_path="\n".join(batch),
+                  )
+                  client.refresh_object_caches(req)
+                  result["refresh_ok"] += len(batch)
+              except Exception as e:
+                  result["refresh_errors"].append({"count": len(batch), "error": str(e)})
+
+          for batch in chunks(urls, max(1, preheat_batch_size)):
+              try:
+                  req = cdn_models.PushObjectCacheRequest(
+                      object_path="\n".join(batch),
+                      area=preheat_area,
+                  )
+                  client.push_object_cache(req)
+                  result["preheat_ok"] += len(batch)
+              except Exception as e:
+                  result["preheat_errors"].append({"count": len(batch), "error": str(e)})
+
+          with open("/tmp/cdn_release_result.json", "w", encoding="utf-8") as f:
+              json.dump(result, f, ensure_ascii=False)
+
+          has_errors = bool(result["refresh_errors"] or result["preheat_errors"])
+          sys.exit(2 if has_errors else 0)
+          PY
+          rc=$?
+          set -e
+
+          if [ ! -f /tmp/cdn_release_result.json ]; then
+            echo "::warning::CDN script completed without result payload."
+            exit 0
+          fi
+
+          total_urls="$(jq -r '.total_urls // 0' /tmp/cdn_release_result.json)"
+          refresh_ok="$(jq -r '.refresh_ok // 0' /tmp/cdn_release_result.json)"
+          preheat_ok="$(jq -r '.preheat_ok // 0' /tmp/cdn_release_result.json)"
+          refresh_err_count="$(jq -r '(.refresh_errors // []) | length' /tmp/cdn_release_result.json)"
+          preheat_err_count="$(jq -r '(.preheat_errors // []) | length' /tmp/cdn_release_result.json)"
+
+          if [ "${rc}" -ne 0 ]; then
+            echo "::warning::CDN refresh/prefetch completed with errors (refresh_error_batches=${refresh_err_count}, preheat_error_batches=${preheat_err_count})."
+          fi
+
+          {
+            echo "### CDN Refresh & Prefetch (release artifacts)"
+            echo ""
+            echo "- Total URLs: ${total_urls}"
+            echo "- Refresh success URLs: ${refresh_ok}"
+            echo "- Prefetch success URLs: ${preheat_ok}"
+            echo "- Refresh error batches: ${refresh_err_count}"
+            echo "- Prefetch error batches: ${preheat_err_count}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          jq -r '
+            [
+              (.refresh_errors // [] | .[] | "refresh: " + .error),
+              (.preheat_errors // [] | .[] | "preheat: " + .error)
+            ] | flatten | .[:5] | .[]
+          ' /tmp/cdn_release_result.json | while IFS= read -r line; do
+            [ -n "${line}" ] || continue
+            echo "::warning::CDN API error: ${line}"
+          done
+
+          exit 0
+
   update_release_manifest:
     needs:
       - prepare_release
@@ -1196,6 +1352,10 @@ jobs:
       ALI_REGION: cn-shanghai
       ALI_ENDPOINT: s3.oss-cn-shanghai.aliyuncs.com
       ALI_ADDRESSING_STYLE: virtual
+      CDN_BASE_URL: https://static.rethinkai.spotty.com.cn
+      CDN_REFRESH_BATCH_SIZE: 1000
+      CDN_PREHEAT_BATCH_SIZE: 100
+      CDN_PREHEAT_AREA: overseas
       RELEASE_TAG: ${{ needs.prepare_release.outputs.release_tag }}
       IS_NIGHTLY: ${{ needs.prepare_release.outputs.is_nightly }}
       ALI_ACCESS_KEY: ${{ secrets.ALI_ACCESS_KEY || secrets.AWS_ACCESS_KEY_ID }}
@@ -1366,6 +1526,152 @@ jobs:
             echo "- Latest: ${manifest_latest_url}"
             echo "- Tag (${RELEASE_TAG}): ${manifest_tag_url}"
           } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Refresh and preheat Alibaba CDN for releases.json
+        if: env.IS_NIGHTLY != 'true' && startsWith(env.RELEASE_TAG, 'v')
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ALI_ACCESS_KEY:-}" ] || [ -z "${ALI_SECRET_KEY:-}" ]; then
+            echo "::warning::Missing ALI_ACCESS_KEY/ALI_SECRET_KEY. Skip releases.json CDN refresh/prefetch."
+            exit 0
+          fi
+
+          if [ -z "${CDN_BASE_URL:-}" ]; then
+            echo "::warning::Missing CDN_BASE_URL. Skip releases.json CDN refresh/prefetch."
+            exit 0
+          fi
+
+          if ! command -v python3 >/dev/null 2>&1; then
+            echo "::warning::python3 not found. Skip releases.json CDN refresh/prefetch."
+            exit 0
+          fi
+
+          if ! command -v jq >/dev/null 2>&1; then
+            echo "::warning::jq not found. Skip releases.json CDN refresh/prefetch."
+            exit 0
+          fi
+
+          if ! python3 -m pip install --quiet --disable-pip-version-check \
+            alibabacloud_cdn20180510 \
+            alibabacloud_tea_openapi >/dev/null 2>&1; then
+            echo "::warning::Failed to install Alibaba Cloud CDN SDK. Skip releases.json CDN refresh/prefetch."
+            exit 0
+          fi
+
+          manifest_url="${CDN_BASE_URL%/}/releases.json"
+          printf '%s\n' "${manifest_url}" > /tmp/cdn_manifest_url.txt
+
+          set +e
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          from typing import List
+
+          from alibabacloud_tea_openapi import models as open_api_models
+          from alibabacloud_cdn20180510.client import Client as CdnClient
+          from alibabacloud_cdn20180510 import models as cdn_models
+
+          with open("/tmp/cdn_manifest_url.txt", "r", encoding="utf-8") as f:
+              urls = sorted({line.strip() for line in f if line.strip().startswith(("http://", "https://"))})
+
+          result = {
+              "total_urls": len(urls),
+              "refresh_ok": 0,
+              "preheat_ok": 0,
+              "refresh_errors": [],
+              "preheat_errors": [],
+          }
+
+          if not urls:
+              with open("/tmp/cdn_manifest_result.json", "w", encoding="utf-8") as f:
+                  json.dump(result, f, ensure_ascii=False)
+              sys.exit(0)
+
+          config = open_api_models.Config(
+              access_key_id=os.environ["ALI_ACCESS_KEY"],
+              access_key_secret=os.environ["ALI_SECRET_KEY"],
+              endpoint="cdn.aliyuncs.com",
+          )
+          client = CdnClient(config)
+
+          refresh_batch_size = int(os.getenv("CDN_REFRESH_BATCH_SIZE", "1000"))
+          preheat_batch_size = int(os.getenv("CDN_PREHEAT_BATCH_SIZE", "100"))
+          preheat_area = os.getenv("CDN_PREHEAT_AREA", "overseas")
+
+          def chunks(items: List[str], size: int):
+              for i in range(0, len(items), size):
+                  yield items[i:i + size]
+
+          for batch in chunks(urls, max(1, refresh_batch_size)):
+              try:
+                  req = cdn_models.RefreshObjectCachesRequest(
+                      object_type="File",
+                      object_path="\n".join(batch),
+                  )
+                  client.refresh_object_caches(req)
+                  result["refresh_ok"] += len(batch)
+              except Exception as e:
+                  result["refresh_errors"].append({"count": len(batch), "error": str(e)})
+
+          for batch in chunks(urls, max(1, preheat_batch_size)):
+              try:
+                  req = cdn_models.PushObjectCacheRequest(
+                      object_path="\n".join(batch),
+                      area=preheat_area,
+                  )
+                  client.push_object_cache(req)
+                  result["preheat_ok"] += len(batch)
+              except Exception as e:
+                  result["preheat_errors"].append({"count": len(batch), "error": str(e)})
+
+          with open("/tmp/cdn_manifest_result.json", "w", encoding="utf-8") as f:
+              json.dump(result, f, ensure_ascii=False)
+
+          has_errors = bool(result["refresh_errors"] or result["preheat_errors"])
+          sys.exit(2 if has_errors else 0)
+          PY
+          rc=$?
+          set -e
+
+          if [ ! -f /tmp/cdn_manifest_result.json ]; then
+            echo "::warning::releases.json CDN script completed without result payload."
+            exit 0
+          fi
+
+          total_urls="$(jq -r '.total_urls // 0' /tmp/cdn_manifest_result.json)"
+          refresh_ok="$(jq -r '.refresh_ok // 0' /tmp/cdn_manifest_result.json)"
+          preheat_ok="$(jq -r '.preheat_ok // 0' /tmp/cdn_manifest_result.json)"
+          refresh_err_count="$(jq -r '(.refresh_errors // []) | length' /tmp/cdn_manifest_result.json)"
+          preheat_err_count="$(jq -r '(.preheat_errors // []) | length' /tmp/cdn_manifest_result.json)"
+
+          if [ "${rc}" -ne 0 ]; then
+            echo "::warning::releases.json CDN refresh/prefetch completed with errors (refresh_error_batches=${refresh_err_count}, preheat_error_batches=${preheat_err_count})."
+          fi
+
+          {
+            echo "### CDN Refresh & Prefetch (releases.json)"
+            echo ""
+            echo "- URL: ${manifest_url}"
+            echo "- Refresh success URLs: ${refresh_ok}/${total_urls}"
+            echo "- Prefetch success URLs: ${preheat_ok}/${total_urls}"
+            echo "- Refresh error batches: ${refresh_err_count}"
+            echo "- Prefetch error batches: ${preheat_err_count}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          jq -r '
+            [
+              (.refresh_errors // [] | .[] | "refresh: " + .error),
+              (.preheat_errors // [] | .[] | "preheat: " + .error)
+            ] | flatten | .[:5] | .[]
+          ' /tmp/cdn_manifest_result.json | while IFS= read -r line; do
+            [ -n "${line}" ] || continue
+            echo "::warning::CDN API error (releases.json): ${line}"
+          done
+
+          exit 0
 
       - name: Prune OSS version snapshots (keep latest 3 + nightly)
         shell: bash
