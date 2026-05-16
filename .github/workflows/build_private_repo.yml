@@ -1433,7 +1433,6 @@ jobs:
 
           version="${RELEASE_TAG#v}"
           release_date="$(TZ=Asia/Shanghai date +%F)"
-          gh_latest_download_prefix="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download"
 
           release_api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
           http_code=$(curl -sS -o /tmp/release.json -w "%{http_code}" \
@@ -1459,11 +1458,10 @@ jobs:
             --arg mac_arm64 "${mac_arm64}" \
             --arg mac_x64 "${mac_x64}" \
             --arg windows "${windows_exe}" \
-            --arg latest_prefix "${gh_latest_download_prefix}" \
             '{
-              "mac-arm64": (if $mac_arm64 == "" then "" else ($latest_prefix + "/" + $mac_arm64) end),
-              "mac-x64": (if $mac_x64 == "" then "" else ($latest_prefix + "/" + $mac_x64) end),
-              "windows": (if $windows == "" then "" else ($latest_prefix + "/" + $windows) end)
+              "mac-arm64": $mac_arm64,
+              "mac-x64": $mac_x64,
+              "windows": $windows
             }
             | with_entries(select(.value != ""))' > /tmp/downloads.json
 
@@ -1491,10 +1489,22 @@ jobs:
           jq \
             --slurpfile current /tmp/current_release_entry.json \
             '
+            def to_filename:
+              if type != "string" then .
+              elif test("^https?://") then (split("?")[0] | split("#")[0] | split("/") | last)
+              else .
+              end;
+
             .latest = $current[0].version
             | .releases = (
                 [$current[0]]
-                + ((.releases // []) | map(select(.version != $current[0].version)))
+                + (
+                    (.releases // [])
+                    | map(
+                        .downloads = ((.downloads // {}) | with_entries(.value |= to_filename))
+                      )
+                    | map(select(.version != $current[0].version))
+                  )
               )[:3]
             ' /tmp/releases.json > /tmp/releases.next.json
 
