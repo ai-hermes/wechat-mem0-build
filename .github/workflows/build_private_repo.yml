@@ -1266,8 +1266,14 @@ jobs:
             exit 1
           fi
 
+          if ! command -v gh >/dev/null 2>&1; then
+            echo "gh CLI not found on runner."
+            exit 1
+          fi
+
           version="${RELEASE_TAG#v}"
           release_date="$(TZ=Asia/Shanghai date +%F)"
+          gh_latest_download_prefix="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download"
 
           release_api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
           http_code=$(curl -sS -o /tmp/release.json -w "%{http_code}" \
@@ -1293,10 +1299,11 @@ jobs:
             --arg mac_arm64 "${mac_arm64}" \
             --arg mac_x64 "${mac_x64}" \
             --arg windows "${windows_exe}" \
+            --arg latest_prefix "${gh_latest_download_prefix}" \
             '{
-              "mac-arm64": $mac_arm64,
-              "mac-x64": $mac_x64,
-              "windows": $windows
+              "mac-arm64": (if $mac_arm64 == "" then "" else ($latest_prefix + "/" + $mac_arm64) end),
+              "mac-x64": (if $mac_x64 == "" then "" else ($latest_prefix + "/" + $mac_x64) end),
+              "windows": (if $windows == "" then "" else ($latest_prefix + "/" + $windows) end)
             }
             | with_entries(select(.value != ""))' > /tmp/downloads.json
 
@@ -1341,6 +1348,24 @@ jobs:
             --no-progress
 
           echo "Updated s3://${ALI_BUCKET_NAME}/${manifest_key} for version ${version}"
+
+          GH_TOKEN="${GH_PAT}" gh release upload "${RELEASE_TAG}" /tmp/releases.json \
+            --clobber \
+            --repo "${GITHUB_REPOSITORY}"
+
+          manifest_latest_url="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/${manifest_key}"
+          manifest_tag_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${manifest_key}"
+
+          echo "Uploaded ${manifest_key} to GitHub release ${RELEASE_TAG}"
+          echo "Manifest URL (latest): ${manifest_latest_url}"
+          echo "Manifest URL (tag): ${manifest_tag_url}"
+
+          {
+            echo "### releases.json URLs"
+            echo ""
+            echo "- Latest: ${manifest_latest_url}"
+            echo "- Tag (${RELEASE_TAG}): ${manifest_tag_url}"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Prune OSS version snapshots (keep latest 3 + nightly)
         shell: bash
